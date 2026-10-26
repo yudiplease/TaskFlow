@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskFlow — трекер задач</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">🚀</div>
+      <div>
+        <div class="brand-name">TaskFlow</div>
+        <div class="brand-sub">Kafka · Go · Postgres</div>
+      </div>
+    </div>
+
+    <div class="stats-panel">
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">0</div>
+          <div class="stat-label">всего задач</div>
+        </div>
+        <div class="stat-card accent">
+          <div class="stat-value" id="stat-done-today">0</div>
+          <div class="stat-label">сделано сегодня</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-card warn">
+          <div class="stat-value" id="stat-overdue">0</div>
+          <div class="stat-label">просрочено</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-unassigned">0</div>
+          <div class="stat-label">без исполнителя</div>
+        </div>
+      </div>
+      <div class="progress-block">
+        <div class="progress-title">Прогресс по доске</div>
+        <div class="progress-track"><div class="progress-fill" id="board-progress"></div></div>
+        <div class="progress-note" id="board-progress-note">0% завершено</div>
+      </div>
+    </div>
+
+    <div class="filters">
+      <div class="filter-title">Фильтры</div>
+      <input id="filter-assignee" class="input" placeholder="Исполнитель…" autocomplete="off">
+      <select id="filter-priority" class="input">
+        <option value="">Приоритет: все</option>
+        <option value="urgent">🔥 Срочный</option>
+        <option value="high">⚠️ Высокий</option>
+        <option value="medium">◾ Средний</option>
+        <option value="low">◻️ Низкий</option>
+      </select>
+      <label class="overdue-toggle">
+        <input type="checkbox" id="filter-overdue">
+        <span>Только просроченные</span>
+      </label>
+    </div>
+
+    <nav class="side-nav">
+      <button class="nav-btn active" id="nav-board">📋 Доска</button>
+      <button class="nav-btn" id="nav-calendar">📅 Календарь</button>
+      <button class="nav-btn" id="nav-activity">⚡ Активность</button>
+    </nav>
+
+    <div class="side-footer">
+      <div class="health" id="health">
+        <span class="health-dot"></span><span id="health-text">проверка…</span>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 class="page-title" id="page-title">Канбан-доска</h1>
+      <div class="topbar-actions">
+        <div class="search-wrap">
+          <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="search" class="search" placeholder="Поиск задач…  ( / )" autocomplete="off">
+        </div>
+
+        <div class="bell-wrap">
+          <button class="icon-btn bell" id="btn-bell" aria-label="Уведомления">🔔
+            <span class="bell-badge hidden" id="bell-badge">0</span>
+          </button>
+          <div class="notif-panel hidden" id="notif-panel">
+            <div class="notif-head">
+              <span>Напоминания</span>
+              <div class="notif-head-actions">
+                <button class="link-btn" id="btn-enable-push">Включить пуши</button>
+                <button class="link-btn" id="btn-read-all">Прочитать всё</button>
+              </div>
+            </div>
+            <div class="notif-list" id="notif-list"></div>
+          </div>
+        </div>
+
+        <button class="btn-primary" id="btn-new">
+          <span class="btn-plus">＋</span> Новая задача
+        </button>
+      </div>
+    </header>
+
+    <section class="board" id="board"></section>
+
+    <section class="calendar-view hidden" id="calendar-view">
+      <div class="cal-head">
+        <button class="icon-btn" id="cal-prev" aria-label="Предыдущий месяц">‹</button>
+        <div class="cal-title" id="cal-title"></div>
+        <button class="icon-btn" id="cal-next" aria-label="Следующий месяц">›</button>
+        <button class="btn-ghost cal-today" id="cal-today">Сегодня</button>
+      </div>
+      <div class="cal-grid" id="cal-grid"></div>
+      <div class="cal-unscheduled" id="cal-unscheduled"></div>
+    </section>
+
+    <section class="activity-view hidden" id="activity-view">
+      <div class="activity-feed" id="activity-feed"></div>
+    </section>
+  </main>
+</div>
+
+<!-- Модальное окно задачи -->
+<div class="modal-backdrop hidden" id="modal-backdrop">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="modal-title-text">Новая задача</h2>
+      <button class="icon-btn" id="modal-close" aria-label="Закрыть">✕</button>
+    </div>
+    <form id="task-form" class="modal-body">
+      <label class="field">
+        <span>Заголовок *</span>
+        <input id="f-title" class="input" maxlength="200" required placeholder="Например: настроить CI/CD">
+      </label>
+      <label class="field">
+        <span>Описание</span>
+        <textarea id="f-description" class="input" rows="4" maxlength="5000" placeholder="Что нужно сделать и почему это важно"></textarea>
+      </label>
+      <div class="field-grid">
+        <label class="field">
+          <span>Колонка</span>
+          <select id="f-status" class="input">
+            <option value="backlog">📦 Бэклог</option>
+            <option value="todo">🗓️ К работе</option>
+            <option value="in_progress">⚙️ В работе</option>
+            <option value="review">👀 Ревью</option>
+            <option value="done">✅ Готово</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Приоритет</span>
+          <select id="f-priority" class="input">
+            <option value="low">◻️ Низкий</option>
+            <option value="medium" selected>◾ Средний</option>
+            <option value="high">⚠️ Высокий</option>
+            <option value="urgent">🔥 Срочный</option>
+          </select>
+        </label>
+      </div>
+      <div class="field-grid">
+        <label class="field">
+          <span>Исполнитель</span>
+          <input id="f-assignee" class="input" maxlength="100" placeholder="Имя" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Срок</span>
+          <input id="f-due" class="input" type="date">
+        </label>
+      </div>
+      <label class="field">
+        <span>Метки <em>(через запятую)</em></span>
+        <input id="f-labels" class="input" placeholder="backend, инфраструктура" autocomplete="off">
+      </label>
+
+      <div class="modal-timeline hidden" id="modal-timeline-wrap">
+        <div class="timeline-title">История (Kafka → PostgreSQL)</div>
+        <div class="timeline" id="modal-timeline"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-danger hidden" id="btn-delete">Удалить</button>
+        <div class="spacer"></div>
+        <button type="button" class="btn-ghost" id="btn-cancel">Отмена</button>
+        <button type="submit" class="btn-primary" id="btn-save">Создать</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

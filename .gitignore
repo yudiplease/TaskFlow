@@ -1,0 +1,19 @@
+# Сборочные артефакты
+bin/
+dist/
+*.exe
+*.syso
+
+# Локальные данные приложения
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Служебное
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
