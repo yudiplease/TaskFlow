@@ -1,5 +1,23 @@
 # TaskFlow — трекер задач на Go · Kafka · PostgreSQL
 
+## 🚀 Просто хочу приложение (Windows)
+
+> [**⬇️ Скачать установщик TaskFlow**](https://github.com/yudiplease/taskflow/releases/latest/download/TaskFlow-Setup.exe)
+
+Скачайте и запустите — **сервер, Docker, PostgreSQL и Kafka не нужны**: это обычное десктоп-приложение, все данные хранятся локально в SQLite. Ссылка всегда ведёт на актуальную версию.
+
+<details>
+<summary>Что умеет десктоп-версия</summary>
+
+- Канбан-доска с drag & drop, календарь с планированием дат
+- Напоминания о сроках + **системные уведомления Windows**
+- Установка без прав администратора, без окна консоли
+- Один exe (~16 МБ), чистый Go без CGO
+
+</details>
+
+---
+
 Канбан-трекер с событийным конвейером и полным циклом наблюдаемости. Один код — два облика:
 
 - **Сервер** (`docker compose up`): полный стек — Go API, PostgreSQL, Kafka, Prometheus, Grafana.
