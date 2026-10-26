@@ -56,17 +56,25 @@ func (s *DefaultsService) Put(ctx context.Context, actor string, d domain.TaskDe
 // Ненулевой указатель = поле реально присутствовало в запросе и его
 // значение нужно применить (пустая строка/срез = сбросить запомненное);
 // nil = поле в запросе отсутствовало и запомненное трогать нельзя.
+// DueTimeOfDay/ReminderOffsetMinutes приходят из полей срока: из-за
+// из-за all-day задач пустая строка времени тоже легальна (сброс).
 type StickyPatch struct {
 	Status   *string
 	Priority *string
 	Color    *string
 	Assignee *string
 	Labels   *[]string
+	// DueTimeOfDay — «ЧЧ:ММ» срока последней задачи; "" = срок был all-day
+	// или отсутствовал → запомненное время сбрасывается.
+	DueTimeOfDay *string
+	// ReminderOffsetMinutes — nil = не менять; <=0 = сброс; >0 = запомнить.
+	ReminderOffsetMinutes *int
 }
 
 // Empty сообщает, есть ли вообще что обновлять.
 func (p StickyPatch) Empty() bool {
-	return p.Status == nil && p.Priority == nil && p.Color == nil && p.Assignee == nil && p.Labels == nil
+	return p.Status == nil && p.Priority == nil && p.Color == nil && p.Assignee == nil &&
+		p.Labels == nil && p.DueTimeOfDay == nil && p.ReminderOffsetMinutes == nil
 }
 
 // mergeMu сериализует read-modify-write в ApplyPatch внутри процесса:
@@ -108,6 +116,17 @@ func (s *DefaultsService) ApplyPatch(ctx context.Context, actor string, p Sticky
 	if p.Labels != nil {
 		merged.Labels = *p.Labels
 	}
+	if p.DueTimeOfDay != nil {
+		merged.DueTimeOfDay = *p.DueTimeOfDay
+	}
+	if p.ReminderOffsetMinutes != nil {
+		// <=0 — явный сброс («без напоминания»), >0 — запомнить.
+		if v := *p.ReminderOffsetMinutes; v > 0 {
+			merged.ReminderOffsetMinutes = v
+		} else {
+			merged.ReminderOffsetMinutes = 0
+		}
+	}
 
 	norm, err := merged.Normalize()
 	if err != nil {
@@ -129,6 +148,12 @@ func (s *DefaultsService) ApplyPatch(ctx context.Context, actor string, p Sticky
 		}
 		if p.Labels != nil {
 			fresh.Labels = *p.Labels
+		}
+		if p.DueTimeOfDay != nil {
+			fresh.DueTimeOfDay = *p.DueTimeOfDay
+		}
+		if p.ReminderOffsetMinutes != nil && *p.ReminderOffsetMinutes > 0 {
+			fresh.ReminderOffsetMinutes = *p.ReminderOffsetMinutes
 		}
 		if norm, err = fresh.Normalize(); err != nil {
 			return domain.TaskDefaults{}, time.Time{}, err

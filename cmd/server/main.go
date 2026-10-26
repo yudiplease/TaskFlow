@@ -19,6 +19,10 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	// База часовых поясов встраивается в бинарь: на машинах без системной
+	// tzdata (Windows) time.LoadLocation должен работать — им валидируется
+	// due_timezone и извлекается время суток для sticky-значений.
+	_ "time/tzdata"
 
 	"tasktracker/internal/config"
 	"tasktracker/internal/events"

@@ -7,8 +7,10 @@ import (
 
 // StickyFields — какие поля задачи «залипают» между созданиями.
 // Осознанно исключены поля, привязанные к конкретной задаче:
-// title, description, due_date (конкретная дата), id, timestamps.
-var StickyFields = []string{"status", "priority", "color", "assignee", "labels"}
+// title, description, id, timestamps и АБСОЛЮТНАЯ дата срока (due_at) —
+// иначе каждая новая задача получала бы вчерашний/просроченный срок.
+// Вместо даты залипает только время суток (DueTimeOfDay).
+var StickyFields = []string{"status", "priority", "color", "assignee", "labels", "dueTimeOfDay", "reminderOffsetMinutes"}
 
 // TaskDefaults — «залипающие» значения для предзаполнения формы новой задачи.
 // Пустые поля означают «нет запомненного значения» — форма возьмёт базовый дефолт.
@@ -18,11 +20,18 @@ type TaskDefaults struct {
 	Color    string   `json:"color,omitempty"`
 	Assignee string   `json:"assignee,omitempty"`
 	Labels   []string `json:"labels,omitempty"`
+	// DueTimeOfDay — «ЧЧ:ММ» из последней задачи: при открытии новой формы
+	// подставляется на сегодня (или завтра, если это время сегодня уже
+	// прошло — правило фронтенда), но НИКОГДА как абсолютная дата.
+	DueTimeOfDay string `json:"due_time_of_day,omitempty"`
+	// ReminderOffsetMinutes — запомненное «напомнить за N минут»; 0 = не запомнено.
+	ReminderOffsetMinutes int `json:"reminder_offset_minutes,omitempty"`
 }
 
 // Empty возвращает true, если ни одно sticky-поле не заполнено.
 func (d TaskDefaults) Empty() bool {
-	return d.Status == "" && d.Priority == "" && d.Color == "" && d.Assignee == "" && len(d.Labels) == 0
+	return d.Status == "" && d.Priority == "" && d.Color == "" && d.Assignee == "" &&
+		len(d.Labels) == 0 && d.DueTimeOfDay == "" && d.ReminderOffsetMinutes == 0
 }
 
 // Normalize валидирует и приводит значения к канонической форме.
@@ -58,6 +67,19 @@ func (d TaskDefaults) Normalize() (TaskDefaults, error) {
 		return out, err
 	}
 	out.Labels = labels
+	if d.DueTimeOfDay != "" {
+		minutes, err := ParseTimeOfDay(d.DueTimeOfDay)
+		if err != nil {
+			return out, err
+		}
+		out.DueTimeOfDay = FormatTimeOfDay(minutes)
+	}
+	if d.ReminderOffsetMinutes != 0 {
+		if d.ReminderOffsetMinutes < 0 || d.ReminderOffsetMinutes > MaxReminderOffsetMinutes {
+			return out, fmt.Errorf("%w: напоминание должно быть от 1 до %d минут", ErrInvalid, MaxReminderOffsetMinutes)
+		}
+		out.ReminderOffsetMinutes = d.ReminderOffsetMinutes
+	}
 	return out, nil
 }
 

@@ -48,6 +48,11 @@ func (p Priority) Valid() bool {
 
 // Task — карточка на доске. Position задаёт порядок внутри колонки
 // (дробная нумерация: вставка между соседями = середина отрезка).
+//
+// Срок: DueAt — момент в UTC (timestamptz). DueAllDay=true означает
+// «весь день»: время в UI скрыто, инстант хранится как 23:59 локального
+// дня в зоне DueTimezone (IANA, фиксируется при постановке; иначе
+// клиент смотрит срок в своей зоне).
 type Task struct {
 	ID          string     `json:"id"`
 	Title       string     `json:"title"`
@@ -57,10 +62,15 @@ type Task struct {
 	Assignee    string     `json:"assignee"`
 	Labels      []string   `json:"labels"`
 	Color       string     `json:"color,omitempty"` // HEX из справочника ColorTags; пусто = без метки
-	DueDate     *time.Time `json:"due_date,omitempty"`
-	Position    float64    `json:"position"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	DueAt       *time.Time `json:"due_at,omitempty"`
+	DueAllDay   bool       `json:"due_all_day,omitempty"`
+	DueTimezone string     `json:"due_timezone,omitempty"`
+	// ReminderOffsetMinutes — напомнить за N минут до срока; nil = не напоминать.
+	ReminderOffsetMinutes *int       `json:"reminder_offset_minutes,omitempty"`
+	ReminderSentAt        *time.Time `json:"reminder_sent_at,omitempty"`
+	Position              float64    `json:"position"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 // TaskFilter — параметры выборки списка задач.

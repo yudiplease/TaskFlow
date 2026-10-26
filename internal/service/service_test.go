@@ -33,7 +33,7 @@ func TestCreate_OK(t *testing.T) {
 		Priority: domain.PriorityHigh,
 		Assignee: " Анна ",
 		Labels:   []string{"devops", " DevOps ", ""},
-		DueDate:  &due,
+		DueAt:    &due,
 	}, "Вы")
 	if err != nil {
 		t.Fatalf("Create: %v", err)

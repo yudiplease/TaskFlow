@@ -395,6 +395,38 @@ body {
 .settings-actions { display: flex; justify-content: flex-end; }
 .settings-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-faint); }
 
+/* ---------- DateTimePicker (срок: дата + время) ---------- */
+.due-picker { display: flex; flex-direction: column; gap: 8px; }
+.due-picker-row { display: flex; gap: 8px; align-items: center; }
+.due-picker-row .input { flex: 1; min-width: 0; }
+.due-picker-row .input[type='time'] { flex: 0 0 96px; }
+.due-allday { margin: 0; flex-shrink: 0; white-space: nowrap; }
+.due-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-btn {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chip-btn:hover { color: var(--text); background: var(--panel-strong); border-color: var(--border-strong); }
+.due-warn { font-size: 11.5px; color: var(--amber); }
+.due-warn.hidden { display: none; }
+
+/* Индикация близости срока: <24 ч — оранжевый, <1 ч — акцент + пульсация */
+.card-due.imminent { color: var(--accent); font-weight: 700; animation: due-pulse 1.6s ease-in-out infinite; }
+@keyframes due-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card-due.imminent { animation: none; }
+}
+
 .card-due {
   margin-left: auto;
   display: inline-flex; align-items: center; gap: 4px;

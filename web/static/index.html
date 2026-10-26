@@ -179,11 +179,36 @@
           <span>Исполнитель</span>
           <input id="f-assignee" class="input" maxlength="100" placeholder="Имя" autocomplete="off">
         </label>
-        <label class="field">
-          <span>Срок</span>
-          <input id="f-due" class="input" type="date">
-        </label>
-      </div>
+      <label class="field">
+        <span>Срок <em>(дата и время)</em></span>
+        <div class="due-picker" id="f-due-picker">
+          <div class="due-picker-row">
+            <input id="f-due" class="input" type="date" aria-label="Дата срока">
+            <input id="f-due-time" class="input" type="time" step="300" aria-label="Время срока" placeholder="чч:мм">
+            <label class="overdue-toggle due-allday" title="Время будет скрыто, срок — до 23:59 этого дня">
+              <input type="checkbox" id="f-due-allday">
+              <span>Весь день</span>
+            </label>
+          </div>
+          <div class="due-presets" id="f-due-presets">
+            <button type="button" class="chip-btn" data-preset="today1800">Сегодня 18:00</button>
+            <button type="button" class="chip-btn" data-preset="tomorrow1000">Завтра 10:00</button>
+            <button type="button" class="chip-btn" data-preset="nextMon0900">Пн 09:00</button>
+            <button type="button" class="chip-btn" data-preset="plus1h">+1 час</button>
+          </div>
+          <div class="due-warn hidden" id="f-due-warn">⚠ Это время уже прошло — задача сразу попадёт в просроченные</div>
+        </div>
+      </label>
+      <label class="field">
+        <span>Напомнить <em>(до наступления срока)</em></span>
+        <select id="f-reminder" class="input">
+          <option value="">Без напоминания</option>
+          <option value="5">За 5 минут</option>
+          <option value="15">За 15 минут</option>
+          <option value="60">За 1 час</option>
+          <option value="1440">За 1 день</option>
+        </select>
+      </label>
       <label class="field">
         <span>Метки <em>(через запятую)</em></span>
         <input id="f-labels" class="input" placeholder="backend, инфраструктура" autocomplete="off">

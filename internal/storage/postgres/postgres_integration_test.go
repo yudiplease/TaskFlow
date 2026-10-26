@@ -8,6 +8,8 @@ package postgres_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"reflect"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"tasktracker/internal/config"
 	"tasktracker/internal/domain"
 	"tasktracker/internal/storage/postgres"
 )
@@ -25,6 +28,13 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		dsn = "postgres://tasktracker:tasktracker@localhost:5432/tasktracker?sslmode=disable"
 	}
+	// Схема применяется миграциями postgres.New (идемпотентно: 001–005).
+	// Отдельный пул закрываем сразу — тесты работают со своим.
+	mg, err := postgres.New(context.Background(), config.Config{PostgresDSN: dsn}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Skipf("postgres недоступен (%v), пропуск", err)
+	}
+	mg.Close()
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Skipf("postgres недоступен (%v), пропуск", err)
@@ -48,7 +58,7 @@ func TestTaskRepositoryCRUD(t *testing.T) {
 		Priority:    domain.PriorityUrgent,
 		Assignee:    "Тестер",
 		Labels:      []string{"интеграция", "postgres"},
-		DueDate:     &due,
+		DueAt:       &due,
 		Position:    1000,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -68,8 +78,8 @@ func TestTaskRepositoryCRUD(t *testing.T) {
 	if !reflect.DeepEqual(got.Labels, task.Labels) {
 		t.Errorf("метки = %v, want %v", got.Labels, task.Labels)
 	}
-	if got.DueDate == nil || !got.DueDate.Equal(due) {
-		t.Errorf("срок = %v, want %v", got.DueDate, due)
+	if got.DueAt == nil || !got.DueAt.Equal(due) {
+		t.Errorf("срок = %v, want %v", got.DueAt, due)
 	}
 
 	got.Status = domain.StatusDone

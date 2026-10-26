@@ -27,7 +27,7 @@ func (r *taskRepo) ListDue(_ context.Context, notAfter time.Time) ([]domain.Task
 	defer r.mu.Unlock()
 	var out []domain.Task
 	for _, t := range r.tasks {
-		if t.Status != domain.StatusDone && t.DueDate != nil && !t.DueDate.After(notAfter) {
+		if t.Status != domain.StatusDone && t.DueAt != nil && !t.DueAt.After(notAfter) {
 			out = append(out, t)
 		}
 	}
@@ -108,7 +108,18 @@ func newNotifier(repo *taskRepo) (*notifier.Notifier, *notifRepo, *pub) {
 }
 
 func task(id string, due *time.Time, status domain.Status) domain.Task {
-	return domain.Task{ID: id, Title: "Задача " + id, DueDate: due, Status: status}
+	return domain.Task{ID: id, Title: "Задача " + id, DueAt: due, Status: status}
+}
+
+// remindersOf отбирает персональные напоминания из всех созданных.
+func remindersOf(r *notifRepo) []domain.Notification {
+	var out []domain.Notification
+	for _, n := range r.list {
+		if n.Type == notifier.TypeReminder {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func TestCheck_ClassificationAndDedupe(t *testing.T) {
@@ -238,5 +249,140 @@ func TestCheck_OnNotifyPanicDoesNotBreakCheck(t *testing.T) {
 	}
 	if len(p.events) != 1 {
 		t.Errorf("событие Kafka не опубликовано после паники хука: %d", len(p.events))
+	}
+}
+
+func (r *taskRepo) ListRemindersDue(_ context.Context, now time.Time) ([]domain.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []domain.Task
+	for _, t := range r.tasks {
+		if t.Status == domain.StatusDone || t.DueAt == nil || t.ReminderOffsetMinutes == nil || t.ReminderSentAt != nil {
+			continue
+		}
+		cutoff := t.DueAt.Add(-time.Duration(*t.ReminderOffsetMinutes) * time.Minute)
+		if t.DueAt.After(now) && !cutoff.After(now) {  // граница окна включена, как в SQL (<=)
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (r *taskRepo) MarkReminderSent(_ context.Context, id string, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.tasks {
+		if r.tasks[i].ID == id && r.tasks[i].ReminderSentAt == nil {
+			ts := at
+			r.tasks[i].ReminderSentAt = &ts
+		}
+	}
+	return nil
+}
+
+func TestCheck_PersonalReminderOnce(t *testing.T) {
+	now := time.Date(2026, 10, 25, 15, 0, 0, 0, time.UTC)
+	due := now.Add(10 * time.Minute) // срок через 10 минут
+	offset := 15                     // напомнить за 15 минут → уже пора
+
+	t1 := task("rem1", &due, domain.StatusTodo)
+	t1.ReminderOffsetMinutes = &offset
+	repo := &taskRepo{tasks: []domain.Task{t1}}
+	n, np, p := newNotifier(repo)
+
+	created, err := n.Check(context.Background(), now)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	// Задача со сроком через 10 минут попадает и в поток due_soon, и в
+	// персональные напоминания: считаем по типам.
+	reminders := remindersOf(np)
+	if created != 2 {
+		t.Fatalf("создано напоминаний = %d (due_soon + reminder), want 2", created)
+	}
+	if len(reminders) != 1 {
+		t.Fatalf("персональных напоминаний = %d, want 1: %+v", len(reminders), np.list)
+	}
+	if !strings.Contains(reminders[0].Message, "10 мин") {
+		t.Errorf("текст = %q, должен упоминать остаток 10 мин", reminders[0].Message)
+	}
+	// Событие task.reminder в Kafka (рядом с due_soon).
+	var reminderEvent bool
+	for _, e := range p.events {
+		if e.Type == notifier.EventTaskReminder {
+			reminderEvent = true
+		}
+	}
+	if !reminderEvent {
+		t.Fatalf("нет события task.reminder: %+v", p.events)
+	}
+	// Отметка отправки зафиксирована.
+	if len(repo.tasks) != 1 || repo.tasks[0].ReminderSentAt == nil {
+		t.Fatalf("reminder_sent_at не зафиксирован")
+	}
+
+	// Повторная проверка до истечения срока — персональное напоминание
+	// НЕ дублируется (идемпотентность через reminder_sent_at).
+	created, err = n.Check(context.Background(), now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("повторный Check: %v", err)
+	}
+	if len(remindersOf(np)) != 1 {
+		t.Fatalf("персональное напоминание задублировалось: %+v", np.list)
+	}
+
+	// Смена срока сбрасывает отметку: напоминание придёт по новому сроку.
+	newDue := now.Add(2 * time.Hour)
+	repo.tasks[0].DueAt = &newDue
+	repo.tasks[0].ReminderSentAt = nil
+	created, err = n.Check(context.Background(), now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("Check после смены срока: %v", err)
+	}
+	if created != 0 {
+		t.Errorf("до наступления окна напоминания напоминать рано: created=%d", created)
+	}
+}
+
+func TestCheck_ReminderWindowBoundary(t *testing.T) {
+	now := time.Date(2026, 10, 25, 15, 0, 0, 0, time.UTC)
+	offset := 15
+
+	// Ровно на границе окна (осталось ровно offset минут) — напомнить пора.
+	due := now.Add(15 * time.Minute)
+	t1 := task("edge", &due, domain.StatusTodo)
+	t1.ReminderOffsetMinutes = &offset
+	n, np, _ := newNotifier(&taskRepo{tasks: []domain.Task{t1}})
+	if _, err := n.Check(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if len(remindersOf(np)) != 1 {
+		t.Fatalf("на границе окна персональное напоминание должно создаться: %+v", np.list)
+	}
+
+	// Слишком рано (осталось больше offset) — не напоминать.
+	due2 := now.Add(16 * time.Minute)
+	t2 := task("early", &due2, domain.StatusTodo)
+	t2.ReminderOffsetMinutes = &offset
+	n2, np2, _ := newNotifier(&taskRepo{tasks: []domain.Task{t2}})
+	if _, err := n2.Check(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if len(remindersOf(np2)) != 0 {
+		t.Fatalf("раннее персональное напоминание: %+v", np2.list)
+	}
+
+	// Срок уже наступил — персональное напоминание не нужно (поток overdue).
+	due3 := now.Add(-5 * time.Minute)
+	t3 := task("past", &due3, domain.StatusTodo)
+	t3.ReminderOffsetMinutes = &offset
+	n3, np3, _ := newNotifier(&taskRepo{tasks: []domain.Task{t3}})
+	if _, err := n3.Check(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	for _, nt := range np3.list {
+		if nt.Type == notifier.TypeReminder {
+			t.Fatalf("для наступившего срока персональное напоминание не должно приходить: %+v", np3.list)
+		}
 	}
 }

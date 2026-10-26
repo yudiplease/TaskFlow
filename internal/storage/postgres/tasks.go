@@ -22,11 +22,13 @@ type Tasks struct {
 // NewTasks создаёт репозиторий задач.
 func NewTasks(pool *pgxpool.Pool) *Tasks { return &Tasks{pool: pool} }
 
-const taskColumns = `id, title, description, status, priority, assignee, labels, color, due_date, position, created_at, updated_at`
+const taskColumns = `id, title, description, status, priority, assignee, labels, color, due_at, due_all_day, due_timezone, reminder_offset_minutes, reminder_sent_at, position, created_at, updated_at`
 
 func scanTask(row pgx.Row) (*domain.Task, error) {
 	var t domain.Task
-	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee, &t.Labels, &t.Color, &t.DueDate, &t.Position, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee, &t.Labels,
+		&t.Color, &t.DueAt, &t.DueAllDay, &t.DueTimezone, &t.ReminderOffsetMinutes, &t.ReminderSentAt,
+		&t.Position, &t.CreatedAt, &t.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
@@ -39,9 +41,12 @@ func scanTask(row pgx.Row) (*domain.Task, error) {
 // Create вставляет новую задачу.
 func (r *Tasks) Create(ctx context.Context, t *domain.Task) error {
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO tasks (id, title, description, status, priority, assignee, labels, color, due_date, position, created_at, updated_at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.Color, t.DueDate, t.Position, t.CreatedAt, t.UpdatedAt)
+		INSERT INTO tasks (id, title, description, status, priority, assignee, labels, color,
+			due_at, due_all_day, due_timezone, reminder_offset_minutes, reminder_sent_at, position, created_at, updated_at)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.Color,
+		t.DueAt, t.DueAllDay, t.DueTimezone, t.ReminderOffsetMinutes, t.ReminderSentAt,
+		t.Position, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert задачи: %w", err)
 	}
@@ -59,9 +64,13 @@ func (r *Tasks) Update(ctx context.Context, t *domain.Task) error {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE tasks SET
 			title = $2, description = $3, status = $4, priority = $5,
-			assignee = $6, labels = $7, color = $8, due_date = $9, position = $10, updated_at = $11
+			assignee = $6, labels = $7, color = $8, due_at = $9, due_all_day = $10,
+			due_timezone = $11, reminder_offset_minutes = $12, reminder_sent_at = $13,
+			position = $14, updated_at = $15
 		WHERE id = $1::uuid`,
-		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.Color, t.DueDate, t.Position, t.UpdatedAt)
+		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.Color,
+		t.DueAt, t.DueAllDay, t.DueTimezone, t.ReminderOffsetMinutes, t.ReminderSentAt,
+		t.Position, t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("update задачи: %w", err)
 	}
@@ -140,13 +149,15 @@ func (r *Tasks) List(ctx context.Context, f domain.TaskFilter) ([]domain.Task, i
 	}
 	defer rows.Close()
 
-	var out []domain.Task
+	out := []domain.Task{}
 	for rows.Next() {
-		var t domain.Task
-		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee, &t.Labels, &t.DueDate, &t.Position, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, 0, fmt.Errorf("scan списка задач: %w", err)
+		// Сканируем через scanTask: ручной список здесь рассинхронизировался
+		// с taskColumns (после добавления color) и ломал List на Postgres.
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, 0, err
 		}
-		out = append(out, t)
+		out = append(out, *t)
 	}
 	return out, total, rows.Err()
 }
@@ -165,8 +176,8 @@ func (r *Tasks) MaxPosition(ctx context.Context, status domain.Status) (float64,
 func (r *Tasks) ListDue(ctx context.Context, notAfter time.Time) ([]domain.Task, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT `+taskColumns+` FROM tasks
-		WHERE due_date IS NOT NULL AND status <> 'done' AND due_date <= $1
-		ORDER BY due_date ASC LIMIT 500`, notAfter)
+		WHERE due_at IS NOT NULL AND status <> 'done' AND due_at <= $1
+		ORDER BY due_at ASC LIMIT 500`, notAfter)
 	if err != nil {
 		return nil, fmt.Errorf("select due задач: %w", err)
 	}
@@ -174,13 +185,53 @@ func (r *Tasks) ListDue(ctx context.Context, notAfter time.Time) ([]domain.Task,
 
 	out := []domain.Task{}
 	for rows.Next() {
-		var t domain.Task
-		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee, &t.Labels, &t.DueDate, &t.Position, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanTask(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan due задачи: %w", err)
 		}
-		out = append(out, t)
+		out = append(out, *t)
 	}
 	return out, rows.Err()
+}
+
+// ListRemindersDue возвращает задачи, по которым пора напомнить персонально:
+// смещение задано, напоминание ещё не отправлялось и до срока осталось
+// не больше offset минут (срок ещё не наступил — наступившие сроки
+// обслуживаются потоком due_soon/overdue).
+func (r *Tasks) ListRemindersDue(ctx context.Context, now time.Time) ([]domain.Task, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+taskColumns+` FROM tasks
+		WHERE reminder_offset_minutes IS NOT NULL AND reminder_offset_minutes > 0
+		  AND reminder_sent_at IS NULL AND status <> 'done'
+		  AND due_at IS NOT NULL
+		  AND due_at > $1
+		  AND due_at - make_interval(mins => reminder_offset_minutes) <= $1
+		ORDER BY due_at ASC LIMIT 500`, now)
+	if err != nil {
+		return nil, fmt.Errorf("select reminders due: %w", err)
+	}
+	defer rows.Close()
+
+	out := []domain.Task{}
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan reminder задачи: %w", err)
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
+// MarkReminderSent фиксирует отправку напоминания (идемпотентно).
+func (r *Tasks) MarkReminderSent(ctx context.Context, taskID string, at time.Time) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE tasks SET reminder_sent_at = $2 WHERE id = $1::uuid AND reminder_sent_at IS NULL`,
+		taskID, at)
+	if err != nil {
+		return fmt.Errorf("mark reminder sent: %w", err)
+	}
+	return nil
 }
 
 // Stats считает агрегаты для дашборда одним запросом.
@@ -192,7 +243,7 @@ func (r *Tasks) Stats(ctx context.Context) (*domain.Stats, error) {
 	err := r.pool.QueryRow(ctx, `
 		SELECT
 			count(*),
-			count(*) FILTER (WHERE due_date IS NOT NULL AND due_date < now() AND status <> 'done'),
+			count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now() AND status <> 'done'),
 			count(*) FILTER (WHERE created_at >= date_trunc('day', now())),
 			count(*) FILTER (WHERE status = 'done' AND updated_at >= date_trunc('day', now())),
 			count(*) FILTER (WHERE assignee = '')

@@ -116,10 +116,10 @@ func (m *mockTaskRepo) ListDue(_ context.Context, notAfter time.Time) ([]domain.
 	defer m.mu.Unlock()
 	var out []domain.Task
 	for _, t := range m.tasks {
-		if t.Status == domain.StatusDone || t.DueDate == nil {
+		if t.Status == domain.StatusDone || t.DueAt == nil {
 			continue
 		}
-		if !t.DueDate.After(notAfter) {
+		if !t.DueAt.After(notAfter) {
 			cp := *t
 			out = append(out, cp)
 		}
@@ -221,3 +221,32 @@ func (m *mockDefaultsRepo) Put(_ context.Context, actor string, d domain.TaskDef
 }
 
 var _ storage.DefaultsRepository = (*mockDefaultsRepo)(nil)
+
+func (m *mockTaskRepo) ListRemindersDue(_ context.Context, now time.Time) ([]domain.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Task
+	for _, t := range m.tasks {
+		if t.Status == domain.StatusDone || t.DueAt == nil || t.ReminderOffsetMinutes == nil || t.ReminderSentAt != nil {
+			continue
+		}
+		cutoff := t.DueAt.Add(-time.Duration(*t.ReminderOffsetMinutes) * time.Minute)
+		if t.DueAt.After(now) && !cutoff.After(now) {  // граница окна включена, как в SQL (<=)
+			out = append(out, *t)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockTaskRepo) MarkReminderSent(_ context.Context, taskID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tasks[taskID]; !ok {
+		return errNotFound()
+	}
+	if m.tasks[taskID].ReminderSentAt == nil {
+		ts := at
+		m.tasks[taskID].ReminderSentAt = &ts
+	}
+	return nil
+}

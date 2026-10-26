@@ -39,7 +39,7 @@ func TestTasksCRUDAndCodecs(t *testing.T) {
 		Priority:    domain.PriorityUrgent,
 		Assignee:    "Анна",
 		Labels:      []string{"desktop", "sqlite"},
-		DueDate:     &due,
+		DueAt:       &due,
 		Position:    1000,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -58,8 +58,8 @@ func TestTasksCRUDAndCodecs(t *testing.T) {
 	if !reflect.DeepEqual(got.Labels, task.Labels) {
 		t.Errorf("метки = %v, want %v", got.Labels, task.Labels)
 	}
-	if got.DueDate == nil || !got.DueDate.Equal(due) {
-		t.Errorf("срок = %v, want %v", got.DueDate, due)
+	if got.DueAt == nil || !got.DueAt.Equal(due) {
+		t.Errorf("срок = %v, want %v", got.DueAt, due)
 	}
 	if !got.CreatedAt.Equal(now) {
 		t.Errorf("создана = %v, want %v", got.CreatedAt, now)
@@ -216,3 +216,62 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func strPtr(s domain.Status) *domain.Status { return &s }
+
+// TestMigration_005DueAt проверяет миграцию due_date → due_at на базе
+// старой схемы (до 005): колонка переименовывается, существующим строкам
+// проставляется due_all_day=1 (бизнес-правило: старый фронтенд ставил
+// конец дня), данные не теряются.
+func TestMigration_005DueAt(t *testing.T) {
+	dbPath := t.TempDir() + "/old-schema.db"
+	// Строим базу по схеме 001–004 вручную (со старым именем колонки).
+	// schema_migrations с записями 001–004 — как в настоящей старой базе:
+	// миграционный раннер не должен их повторять.
+	setupSQL := `
+		CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+		INSERT INTO schema_migrations (name, applied_at) VALUES
+			('001_init.sql', '2026-09-01T00:00:00Z'),
+			('002_notifications.sql', '2026-09-01T00:00:01Z'),
+			('003_task_colors.sql', '2026-09-01T00:00:02Z'),
+			('004_task_defaults.sql', '2026-09-01T00:00:03Z');
+		CREATE TABLE tasks (
+			id          TEXT PRIMARY KEY,
+			title       TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			status      TEXT NOT NULL DEFAULT 'backlog',
+			priority    TEXT NOT NULL DEFAULT 'medium',
+			assignee    TEXT NOT NULL DEFAULT '',
+			labels      TEXT NOT NULL DEFAULT '[]',
+			color       TEXT NOT NULL DEFAULT '',
+			due_date    TEXT,
+			position    REAL NOT NULL DEFAULT 0,
+			created_at  TEXT NOT NULL,
+			updated_at  TEXT NOT NULL
+		);
+		INSERT INTO tasks (id, title, due_date, created_at, updated_at)
+		VALUES ('11111111-1111-1111-1111-111111111111', 'Старая задача', '2026-10-01T20:59:00Z', '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z');
+	`
+	s0, err := sqlite.OpenRawForTest(dbPath, setupSQL)
+	if err != nil {
+		t.Fatalf("подготовка старой схемы: %v", err)
+	}
+	_ = s0.Close()
+
+	// Обычное открытие: миграции 001–005 применяются (001–004 — no-op).
+	s, err := sqlite.Open(context.Background(), dbPath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("open с миграцией: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	repo := sqlite.NewTasks(s)
+	got, err := repo.Get(context.Background(), "11111111-1111-1111-1111-111111111111")
+	if err != nil {
+		t.Fatalf("get после миграции: %v", err)
+	}
+	if got.DueAt == nil || !got.DueAt.Equal(time.Date(2026, 10, 1, 20, 59, 0, 0, time.UTC)) {
+		t.Errorf("due_at = %v, want 2026-10-01T20:59:00Z (данные не должны теряться)", got.DueAt)
+	}
+	if !got.DueAllDay {
+		t.Errorf("старая строка должна получить due_all_day=true")
+	}
+}

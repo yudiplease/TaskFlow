@@ -49,12 +49,20 @@ type CreateTaskInput struct {
 	Assignee    string
 	Labels      []string
 	Color       string // HEX из справочника domain.ColorTags; пусто = без метки
-	DueDate     *time.Time
+	// Срок: DueAt — момент в UTC; DueAllDay=true скрывает время в UI
+	// (инстант = 23:59 локального дня); DueTimezone — IANA-зона постановки.
+	DueAt      *time.Time
+	DueAllDay  bool
+	DueTimezone string
+	// ReminderOffsetMinutes — напомнить за N минут до срока; nil = не напоминать.
+	ReminderOffsetMinutes *int
 }
 
 // UpdateTaskInput — частичное обновление; nil = не менять поле.
-// ClearDueDate=true сбрасывает срок (фронтенд шлёт due_date="" для очистки).
-// Color — указатель: пустая строка сбрасывает метку, nil оставляет как было.
+// DueAt: инстант нового срока; ClearDue=true сбрасывает срок
+// (фронтенд шлёт due_at="" для очистки).
+// ReminderOffset: новое значение «напомнить за N минут» (nil = не менять,
+// ClearReminder=true — убрать напоминание).
 type UpdateTaskInput struct {
 	Title        *string
 	Description  *string
@@ -63,9 +71,13 @@ type UpdateTaskInput struct {
 	Assignee     *string
 	Labels       *[]string
 	Color        *string
-	DueDate      *time.Time
-	ClearDueDate bool
-	Position     *float64
+	DueAt        *time.Time
+	ClearDue     bool
+	DueAllDay    *bool
+	DueTimezone  *string
+	ReminderOffset *int
+	ClearReminder  bool
+	Position       *float64
 }
 
 // Create создаёт задачу и публикует событие task.created.
@@ -97,6 +109,14 @@ func (s *TaskService) Create(ctx context.Context, in CreateTaskInput, actor stri
 	if err != nil {
 		return nil, err
 	}
+	if in.DueTimezone != "" {
+		if _, err := time.LoadLocation(in.DueTimezone); err != nil {
+			return nil, fmt.Errorf("%w: неизвестный часовой пояс %q", domain.ErrInvalid, in.DueTimezone)
+		}
+	}
+	if err := domain.ValidateReminderOffset(derefInt(in.ReminderOffsetMinutes)); err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	pos, err := s.tasks.MaxPosition(ctx, in.Status)
@@ -105,18 +125,21 @@ func (s *TaskService) Create(ctx context.Context, in CreateTaskInput, actor stri
 	}
 
 	t := &domain.Task{
-		ID:          uuid.NewString(),
-		Title:       in.Title,
-		Description: strings.TrimSpace(in.Description),
-		Status:      in.Status,
-		Priority:    in.Priority,
-		Assignee:    strings.TrimSpace(in.Assignee),
-		Labels:      labels,
-		Color:       color,
-		DueDate:     in.DueDate,
-		Position:    pos + 1000,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                    uuid.NewString(),
+		Title:                 in.Title,
+		Description:           strings.TrimSpace(in.Description),
+		Status:                in.Status,
+		Priority:              in.Priority,
+		Assignee:              strings.TrimSpace(in.Assignee),
+		Labels:                labels,
+		Color:                 color,
+		DueAt:                 in.DueAt,
+		DueAllDay:             in.DueAllDay && in.DueAt != nil,
+		DueTimezone:           in.DueTimezone,
+		ReminderOffsetMinutes: in.ReminderOffsetMinutes,
+		Position:              pos + 1000,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 	if err := s.tasks.Create(ctx, t); err != nil {
 		return nil, err
@@ -202,11 +225,38 @@ func (s *TaskService) Update(ctx context.Context, id string, in UpdateTaskInput,
 		}
 		t.Color = color
 	}
-	if in.DueDate != nil {
-		t.DueDate = in.DueDate
+	if in.DueTimezone != nil {
+		if *in.DueTimezone != "" {
+			if _, err := time.LoadLocation(*in.DueTimezone); err != nil {
+				return nil, fmt.Errorf("%w: неизвестный часовой пояс %q", domain.ErrInvalid, *in.DueTimezone)
+			}
+		}
+		t.DueTimezone = *in.DueTimezone
 	}
-	if in.ClearDueDate {
-		t.DueDate = nil
+	if in.DueAllDay != nil {
+		t.DueAllDay = *in.DueAllDay && t.DueAt != nil
+	}
+	if in.ReminderOffset != nil {
+		if err := domain.ValidateReminderOffset(*in.ReminderOffset); err != nil {
+			return nil, err
+		}
+		v := *in.ReminderOffset
+		t.ReminderOffsetMinutes = &v
+	}
+	if in.ClearReminder {
+		t.ReminderOffsetMinutes = nil
+		t.ReminderSentAt = nil
+	}
+	if in.DueAt != nil || in.ClearDue {
+		// Срок сменили/убрали: персональное напоминание по новому сроку
+		// должно прийти заново, даже если по старому уже отправлялось.
+		t.ReminderSentAt = nil
+	}
+	if in.ClearDue {
+		t.DueAt = nil
+		t.DueAllDay = false
+	} else if in.DueAt != nil {
+		t.DueAt = in.DueAt
 	}
 	if in.Position != nil {
 		t.Position = *in.Position
@@ -306,6 +356,13 @@ func (s *TaskService) Stats(ctx context.Context) (*domain.Stats, error) {
 
 func (s *TaskService) observe(op string, st domain.Status) {
 	s.metrics.TaskOperationsTotal.WithLabelValues(op, string(st)).Inc()
+}
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func validateTitle(title string) error {

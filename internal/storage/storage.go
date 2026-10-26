@@ -23,6 +23,13 @@ type TaskRepository interface {
 	Stats(ctx context.Context) (*domain.Stats, error)
 	// ListDue возвращает незавершённые задачи со сроком не позже notAfter.
 	ListDue(ctx context.Context, notAfter time.Time) ([]domain.Task, error)
+	// ListRemindersDue возвращает незавершённые задачи, по которым пора
+	// отправить персональное напоминание: задан reminder_offset_minutes,
+	// напоминание ещё не отправлялось и до срока осталось не больше offset минут.
+	ListRemindersDue(ctx context.Context, now time.Time) ([]domain.Task, error)
+	// MarkReminderSent фиксирует отправку напоминания (идемпотентность:
+	// повторный вызов для той же задачи не делает ничего).
+	MarkReminderSent(ctx context.Context, taskID string, at time.Time) error
 }
 
 // ActivityRepository — журнал событий.

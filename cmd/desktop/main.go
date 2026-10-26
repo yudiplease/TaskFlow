@@ -31,6 +31,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	// База часовых поясов встраивается в exe: на Windows без Go нет системной
+	// tzdata, а LoadLocation нужен для валидации due_timezone и sticky-времени.
+	_ "time/tzdata"
 
 	"github.com/jchv/go-webview2"
 

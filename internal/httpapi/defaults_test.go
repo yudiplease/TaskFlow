@@ -273,3 +273,157 @@ func TestSticky_PerUserIsolation(t *testing.T) {
 		t.Errorf("значения перемешались между пользователями: system=%+v anna=%+v", system, anna)
 	}
 }
+
+// --- Срок с точностью до минут (due_at) ---
+
+func TestDue_LegacyDueDateBecomesAllDay(t *testing.T) {
+	srv, _ := newDefaultsTestServer(t)
+	defer srv.Close()
+
+	// Старый клиент шлёт due_date (конец дня) — сервер трактует как «весь день».
+	res, body := doJSON(t, srv, "POST", "/api/tasks", map[string]any{
+		"title":    "Старый клиент",
+		"due_date": "2030-05-01T20:59:00Z",
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST = %d, %v", res.StatusCode, body)
+	}
+	if body["due_all_day"] != true {
+		t.Errorf("legacy due_date должен дать due_all_day=true, получено %v", body["due_all_day"])
+	}
+	if body["due_at"] != "2030-05-01T20:59:00Z" {
+		t.Errorf("due_at = %v, want инстант без изменений", body["due_at"])
+	}
+}
+
+func TestDue_NewFormatWithTime(t *testing.T) {
+	srv, _ := newDefaultsTestServer(t)
+	defer srv.Close()
+
+	res, body := doJSON(t, srv, "POST", "/api/tasks", map[string]any{
+		"title":    "С точным сроком",
+		"due_at":   "2030-05-01T15:30:00Z",
+		"due_all_day": false,
+		"due_timezone": "Europe/Moscow",
+		"reminder_offset_minutes": 15,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST = %d, %v", res.StatusCode, body)
+	}
+	if body["due_all_day"] == true {
+		t.Errorf("due_all_day = %v, want false (или отсутствовать при omitempty)", body["due_all_day"])
+	}
+	if body["due_timezone"] != "Europe/Moscow" {
+		t.Errorf("due_timezone = %v", body["due_timezone"])
+	}
+	if rm, ok := body["reminder_offset_minutes"].(float64); !ok || int(rm) != 15 {
+		t.Errorf("reminder_offset_minutes = %v, want 15", body["reminder_offset_minutes"])
+	}
+}
+
+func TestDue_ReminderTriState(t *testing.T) {
+	srv, _ := newDefaultsTestServer(t)
+	defer srv.Close()
+
+	_, created := doJSON(t, srv, "POST", "/api/tasks", map[string]any{"title": "Три состояния"})
+	id, _ := created["id"].(string)
+
+	// 1. Установка.
+	res, body := doJSON(t, srv, "PATCH", "/api/tasks/"+id, map[string]any{"reminder_offset_minutes": 60})
+	if res.StatusCode != http.StatusOK || body["reminder_offset_minutes"] != float64(60) {
+		t.Errorf("установка напоминания: %d %v", res.StatusCode, body["reminder_offset_minutes"])
+	}
+
+	// 2. Отсутствие поля в PATCH — значение не меняется.
+	res, body = doJSON(t, srv, "PATCH", "/api/tasks/"+id, map[string]any{"title": "Другое имя"})
+	if res.StatusCode != http.StatusOK || body["reminder_offset_minutes"] != float64(60) {
+		t.Errorf("PATCH без поля не должен трогать напоминание: %d %v", res.StatusCode, body["reminder_offset_minutes"])
+	}
+
+	// 3. null — явный сброс.
+	res, body = doJSON(t, srv, "PATCH", "/api/tasks/"+id, map[string]any{"reminder_offset_minutes": nil})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH null = %d", res.StatusCode)
+	}
+	if _, still := body["reminder_offset_minutes"]; still {
+		t.Errorf("после null напоминания быть не должно: %v", body["reminder_offset_minutes"])
+	}
+
+	// 4. Отрицательное значение отклоняется.
+	res, _ = doJSON(t, srv, "PATCH", "/api/tasks/"+id, map[string]any{"reminder_offset_minutes": -5})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("отрицательный offset = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestDue_ClearDueAndTimezoneValidation(t *testing.T) {
+	srv, _ := newDefaultsTestServer(t)
+	defer srv.Close()
+
+	_, created := doJSON(t, srv, "POST", "/api/tasks", map[string]any{
+		"title": "Со сроком", "due_at": "2030-05-01T15:30:00Z", "due_timezone": "Europe/Moscow",
+	})
+	id, _ := created["id"].(string)
+
+	// Чужой часовой пояс отклоняется.
+	res, _ := doJSON(t, srv, "PATCH", "/api/tasks/"+id, map[string]any{"due_timezone": "Mars/Olympus"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("неизвестная зона = %d, want 400", res.StatusCode)
+	}
+
+	// Пустая строка due_at = сброс срока (и due_all_day).
+	res, body := doJSON(t, srv, "PATCH", "/api/tasks/"+id, map[string]any{"due_at": ""})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH due_at='' = %d", res.StatusCode)
+	}
+	if _, still := body["due_at"]; still {
+		t.Errorf("срок должен быть убран: %v", body["due_at"])
+	}
+	if body["due_all_day"] == true {
+		t.Errorf("due_all_day должен сброситься вместе со сроком")
+	}
+}
+
+func TestSticky_TimeOfDayRememberedNotDate(t *testing.T) {
+	srv, defRepo := newDefaultsTestServer(t)
+	defer srv.Close()
+
+	// Создаём задачу со сроком 15:30 UTC и зоной Москвы → локальное 18:30.
+	res, body := doJSON(t, srv, "POST", "/api/tasks", map[string]any{
+		"title":         "Со временем",
+		"due_at":        "2030-05-01T15:30:00Z",
+		"due_all_day":   false,
+		"due_timezone":  "Europe/Moscow",
+		"reminder_offset_minutes": 5,
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("POST = %d, %v", res.StatusCode, body)
+	}
+
+	d := defRepo.items[service.DefaultActor]
+	if d.DueTimeOfDay != "18:30" {
+		t.Errorf("due_time_of_day = %q, want 18:30 (15:30 UTC в Europe/Moscow)", d.DueTimeOfDay)
+	}
+	if d.ReminderOffsetMinutes != 5 {
+		t.Errorf("reminder_offset_minutes = %d, want 5", d.ReminderOffsetMinutes)
+	}
+	// В sticky-структуре нет поля для даты — проверяем JSON целиком.
+	raw, _ := json.Marshal(d)
+	if strings.Contains(string(raw), "2030-05-01") {
+		t.Errorf("абсолютная дата не должна запоминаться: %s", raw)
+	}
+
+	// All-day задача сбрасывает запомненное время, но не напоминание.
+	doJSON(t, srv, "POST", "/api/tasks", map[string]any{
+		"title":       "Весь день",
+		"due_at":      "2030-05-02T20:59:00Z",
+		"due_all_day": true,
+	})
+	d = defRepo.items[service.DefaultActor]
+	if d.DueTimeOfDay != "" {
+		t.Errorf("all-day должен сбросить запомненное время: %+v", d)
+	}
+	if d.ReminderOffsetMinutes != 5 {
+		t.Errorf("напоминание должно остаться: %+v", d)
+	}
+}

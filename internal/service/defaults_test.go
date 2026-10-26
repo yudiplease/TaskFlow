@@ -2,15 +2,18 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"tasktracker/internal/domain"
 	"tasktracker/internal/service"
 )
 
-func strPtr(s string) *string    { return &s }
+func strPtr(s string) *string        { return &s }
 func labelsPtr(l []string) *[]string { return &l }
+func intPtr(v int) *int              { return &v }
 
 func newDefaultsSvc(t *testing.T) (*service.DefaultsService, *mockDefaultsRepo) {
 	t.Helper()
@@ -163,5 +166,67 @@ func TestDefaults_ApplyPatch_PerUser(t *testing.T) {
 	annas, _, _ := svc.Get(ctx, "Анна")
 	if mine.Status != "in_progress" || annas.Status != "done" {
 		t.Errorf("значения перемешались между пользователями: %q / %q", mine.Status, annas.Status)
+	}
+}
+
+func TestDefaults_ApplyPatch_TimeOfDayRemembered(t *testing.T) {
+	svc, _ := newDefaultsSvc(t)
+	ctx := context.Background()
+
+	// Из задачи со сроком 18:30 запоминается только ВРЕМЯ, не дата:
+	// в sticky-структуре нет поля для абсолютной даты по построению.
+	if _, _, err := svc.ApplyPatch(ctx, "Вы", service.StickyPatch{
+		DueTimeOfDay:          strPtr("18:30"),
+		ReminderOffsetMinutes: intPtr(15),
+	}); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	d, _, _ := svc.Get(ctx, "Вы")
+	if d.DueTimeOfDay != "18:30" {
+		t.Errorf("due_time_of_day = %q, want 18:30", d.DueTimeOfDay)
+	}
+	if d.ReminderOffsetMinutes != 15 {
+		t.Errorf("reminder_offset_minutes = %d, want 15", d.ReminderOffsetMinutes)
+	}
+	raw, _ := json.Marshal(d)
+	if strings.Contains(string(raw), "due_at") || strings.Contains(string(raw), "date") {
+		t.Errorf("в sticky-значениях не должно быть абсолютной даты: %s", raw)
+	}
+
+	// All-day или сброс срока (пустая строка) сбрасывают запомненное время,
+	// напоминание при этом остаётся.
+	if _, _, err := svc.ApplyPatch(ctx, "Вы", service.StickyPatch{
+		DueTimeOfDay: strPtr(""),
+	}); err != nil {
+		t.Fatalf("ApplyPatch (сброс времени): %v", err)
+	}
+	d, _, _ = svc.Get(ctx, "Вы")
+	if d.DueTimeOfDay != "" || d.ReminderOffsetMinutes != 15 {
+		t.Errorf("после сброса времени: %+v", d)
+	}
+
+	// «Без напоминания» (<=0) сбрасывает запомненное.
+	if _, _, err := svc.ApplyPatch(ctx, "Вы", service.StickyPatch{
+		ReminderOffsetMinutes: intPtr(0),
+	}); err != nil {
+		t.Fatalf("ApplyPatch (сброс напоминания): %v", err)
+	}
+	d, _, _ = svc.Get(ctx, "Вы")
+	if d.ReminderOffsetMinutes != 0 {
+		t.Errorf("напоминание должно быть сброшено: %+v", d)
+	}
+}
+
+func TestDefaults_ApplyPatch_TimeOfDayNormalized(t *testing.T) {
+	svc, _ := newDefaultsSvc(t)
+	ctx := context.Background()
+
+	// «9:5» от фронтенда канонизируется в «09:05» при сохранении.
+	if _, _, err := svc.ApplyPatch(ctx, "Вы", service.StickyPatch{DueTimeOfDay: strPtr("9:5")}); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	d, _, _ := svc.Get(ctx, "Вы")
+	if d.DueTimeOfDay != "09:05" {
+		t.Errorf("due_time_of_day = %q, want 09:05", d.DueTimeOfDay)
 	}
 }

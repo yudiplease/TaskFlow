@@ -22,12 +22,12 @@
     "Comments": "TaskFlow — трекер задач (десктоп-версия на Go + SQLite)",
     "CompanyName": "TaskFlow",
     "FileDescription": "TaskFlow — трекер задач",
-    "FileVersion": "1.2.0.0",
+    "FileVersion": "1.3.0.0",
     "InternalName": "TaskFlow",
     "LegalCopyright": "MIT License",
     "OriginalFilename": "TaskFlow.exe",
     "ProductName": "TaskFlow",
-    "ProductVersion": "1.2.0.0"
+    "ProductVersion": "1.3.0.0"
   },
   "VarFileInfo": {
     "Translation": {

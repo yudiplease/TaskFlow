@@ -14,11 +14,33 @@ const ACTOR = 'Вы';
 
 /* ---------- Sticky / smart defaults ----------
    Какие поля «залипают» между задачами. Поля, привязанные к конкретной
-   задаче (title, description, due_date, id), запоминать нельзя. */
-const STICKY_FIELDS = ['status', 'priority', 'color', 'assignee', 'labels'];
-const STICKY_FIELD_LABELS = { status: 'Колонка', priority: 'Приоритет', color: 'Цвет', assignee: 'Исполнитель', labels: 'Метки' };
+   задаче (title, description, id), запоминать нельзя, как и АБСОЛЮТНУЮ
+   дату срока (due_at) — иначе новая задача получит просроченный срок.
+   Вместо даты залипает только время суток (dueTimeOfDay) и напоминание. */
+const STICKY_FIELDS = ['status', 'priority', 'color', 'assignee', 'labels', 'dueTimeOfDay', 'reminderOffsetMinutes'];
+const STICKY_FIELD_LABELS = {
+  status: 'Колонка', priority: 'Приоритет', color: 'Цвет', assignee: 'Исполнитель',
+  labels: 'Метки', dueTimeOfDay: 'Время срока', reminderOffsetMinutes: 'Напоминание',
+};
 // База, если ни preselect, ни sticky-значения не заданы.
-const BASE_TASK_DEFAULTS = { status: 'backlog', priority: 'medium', color: '', assignee: '', labels: [] };
+const BASE_TASK_DEFAULTS = {
+  status: 'backlog', priority: 'medium', color: '', assignee: '', labels: [],
+  dueTimeOfDay: '', reminderOffsetMinutes: null,
+};
+
+// Зона пользователя: храним и отдаём её с каждой задачей (due_timezone),
+// чтобы граница «дня» у all-day задач не зависела от того, кто смотрит.
+const VIEWER_TZ = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC';
+
+/**
+ * Срок задачи, разложенный на части (JSDoc-тип вместо TypeScript-типа
+ * из ТЗ — проект на чистом JS):
+ * @typedef {Object} DueDateTime
+ * @property {string} date            «ГГГГ-ММ-ДД» в зоне timezone
+ * @property {string|null} time       «ЧЧ:ММ» или null для «весь день»
+ * @property {string} timezone        IANA-зона, в которой задан срок
+ * @property {boolean} allDay         весь день — время игнорируем
+ */
 
 const state = {
   tasks: [],
@@ -72,20 +94,6 @@ function hueFromString(s) {
   let h = 0;
   for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360;
   return h;
-}
-
-function formatDue(task) {
-  if (!task.due_date) return null;
-  const d = new Date(task.due_date);
-  const now = new Date();
-  const diffDays = Math.floor((d - now) / 86400000);
-  let cls = '';
-  if (task.status !== 'done') {
-    if (diffDays < 0) cls = 'overdue';
-    else if (diffDays <= 2) cls = 'soon';
-  }
-  const label = d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
-  return { label: (diffDays < 0 ? '⏰ ' : '📅 ') + label, cls };
 }
 
 function timeAgo(iso) {
@@ -143,10 +151,101 @@ function setColorPalette(hex) {
   });
 }
 
+/* ---------- Срок (due_at): разбор, сборка, форматирование ----------
+   Храним UTC-инстант (RFC3339) + флаг due_all_day + зону постановки
+   due_timezone. Отображение — через Intl.DateTimeFormat в зоне задачи. */
+const fmtCache = {};
+function intlFmt(tz, opts, key) {
+  const id = key + '|' + tz;
+  if (!fmtCache[id]) fmtCache[id] = new Intl.DateTimeFormat('ru-RU', { timeZone: tz, ...opts });
+  return fmtCache[id];
+}
+
+/** Разбирает дату задачи в DueDateTime (см. typedef выше). null — срока нет. */
+function parseDueTask(task) {
+  if (!task || !task.due_at) return null;
+  const d = new Date(task.due_at);
+  if (Number.isNaN(d.getTime())) return null;
+  const allDay = !!task.due_all_day;
+  const tz = task.due_timezone || VIEWER_TZ;
+  // en-CA даёт ГГГГ-ММ-ДД; en-GB — «ЧЧ:ММ» без h12/суффиксов.
+  const date = intlFmt(tz, { year: 'numeric', month: '2-digit', day: '2-digit' }, 'date').format(d);
+  let time = null;
+  if (!allDay) {
+    time = intlFmt(tz, { hour: '2-digit', minute: '2-digit', hour12: false }, 'time').format(d);
+  }
+  return { date, time, timezone: tz, allDay };
+}
+
+/** Собирает RFC3339-инстант из «ГГГГ-ММ-ДД» + «ЧЧ:ММ» (зона пользователя). */
+function dueAtISO(date, time, allDay) {
+  if (!date) return '';
+  if (!time || allDay) {
+    // «Весь день» = конец дня (23:59) локального времени — бизнес-правило,
+    // унаследованное от дата-онли эпохи; см. миграцию 005_due_at.sql.
+    return new Date(date + 'T23:59:00').toISOString();
+  }
+  // Валидация на стороне клиента: невозможные значения не собираем.
+  const m = /^(\d{1,2}):(\d{1,2})$/.exec(time);
+  if (!m) return '';
+  const h = +m[1], min = +m[2];
+  if (h > 23 || min > 59) return '';
+  return new Date(date + 'T' + String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0') + ':00').toISOString();
+}
+
+/** Формат карточки: «05.11.2026, 18:30» или дата для all-day. */
+function formatDue(task) {
+  const due = parseDueTask(task);
+  if (!due) return null;
+  const d = new Date(task.due_at);
+  const now = new Date();
+  const diffMs = d - now;
+  let cls = '';
+  if (task.status !== 'done') {
+    if (diffMs < 0) cls = 'overdue';
+    else if (diffMs < 3600000) cls = 'imminent'; // < 1 часа — акцент + пульсация
+    else if (diffMs < 86400000) cls = 'soon';    // < 24 часов — оранжевый
+  }
+  const dateStr = intlFmt(due.timezone, { day: '2-digit', month: '2-digit', year: 'numeric' }, 'dmy').format(d);
+  let label;
+  if (due.allDay) {
+    label = '📅 ' + dateStr;
+  } else {
+    const timeStr = intlFmt(due.timezone, { hour: '2-digit', minute: '2-digit' }, 'hm').format(d);
+    label = (diffMs < 0 ? '⏰ ' : '📅 ') + `${dateStr}, ${timeStr}`;
+  }
+  return { label, cls };
+}
+
+/** Склонённый остаток для пресетов/подсказок: «1 ч 5 мин». */
+function humanizeMinutes(total) {
+  if (total < 60) return `${total} мин`;
+  const h = Math.floor(total / 60), m = total % 60;
+  return m ? `${h} ч ${m} мин` : `${h} ч`;
+}
+
 /* ---------- Sticky defaults: синхронизация ----------
    Сервер — источник истины: он сам обновляет значения при сохранении
    задач (POST/PATCH). localStorage — мгновенный кэш; при загрузке
-   побеждает та сторона, у которой свежее updated_at. */
+   побеждает та сторона, у которой свежее updated_at.
+   Сервер отдаёт/принимает snake_case (due_time_of_day), внутри фронта
+   значения живут в camelCase (dueTimeOfDay) — конвертируем на границе. */
+const STICKY_SERVER_KEYS = { due_time_of_day: 'dueTimeOfDay', reminder_offset_minutes: 'reminderOffsetMinutes' };
+
+function defaultsFromServer(raw) {
+  const out = {};
+  for (const [k, v] of Object.entries(raw || {})) out[STICKY_SERVER_KEYS[k] || k] = v;
+  return out;
+}
+
+function defaultsToServer(values) {
+  const camelToSnake = {};
+  for (const [snake, camel] of Object.entries(STICKY_SERVER_KEYS)) camelToSnake[camel] = snake;
+  const out = {};
+  for (const [k, v] of Object.entries(values || {})) out[camelToSnake[k] || k] = v;
+  return out;
+}
+
 function saveStickyLocal() {
   localStorage.setItem('tf_task_defaults_v1', JSON.stringify({
     defaults: state.sticky.values,
@@ -157,13 +256,13 @@ function saveStickyLocal() {
 function normalizeDefaultsPayload(data) {
   const ts = data && data.updated_at ? String(data.updated_at) : '';
   return {
-    values: data && data.defaults && Object.keys(data.defaults).length ? data.defaults : {},
+    values: data && data.defaults && Object.keys(data.defaults).length ? defaultsFromServer(data.defaults) : {},
     updatedAt: ts && !ts.startsWith('0001-') ? ts : null,
   };
 }
 
 async function pushDefaults(values) {
-  const data = await api('/defaults', { method: 'PUT', body: JSON.stringify(values) });
+  const data = await api('/defaults', { method: 'PUT', body: JSON.stringify(defaultsToServer(values)) });
   const norm = normalizeDefaultsPayload(data);
   state.sticky.values = norm.values;
   state.sticky.updatedAt = norm.updatedAt;
@@ -202,13 +301,19 @@ async function loadDefaults() {
 // (POST/PATCH делает это сам) — синхронизируем локальный кэш и updated_at.
 function rememberStickyFromForm(payload) {
   if (!state.sticky.enabled) return;
-  // Форма шлёт все sticky-поля — запоминаем их как есть.
+  // Форма шлёт все sticky-поля — запоминаем их как есть. Абсолютную дату
+  // срока НЕ запоминаем (просрочка у новой задачи), только время суток;
+  // all-day или отсутствие срока сбрасывают запомненное время.
   state.sticky.values = {
     status: payload.status,
     priority: payload.priority,
     color: payload.color || '',
     assignee: payload.assignee || '',
     labels: payload.labels || [],
+    dueTimeOfDay: payload.due_at && !payload.due_all_day
+      ? intlFmt(VIEWER_TZ, { hour: '2-digit', minute: '2-digit', hour12: false }, 'time').format(new Date(payload.due_at))
+      : '',
+    reminderOffsetMinutes: payload.reminder_offset_minutes || 0,
   };
   saveStickyLocal();
   api('/defaults').then((data) => {
@@ -217,6 +322,18 @@ function rememberStickyFromForm(payload) {
     state.sticky.updatedAt = norm.updatedAt;
     saveStickyLocal();
   }).catch(() => { /* локальные значения уже применены */ });
+}
+
+/* Sticky-время срока: подставляем запомненное «ЧЧ:ММ», но НЕ дату.
+   ПРАВИЛО (зафиксировано): дата = сегодня; если «сегодня + это время»
+   уже прошло — берём завтра, чтобы не подставлять заведомо просроченный
+   срок. Возвращает «ГГГГ-ММ-ДД» в зоне пользователя. */
+function stickyDueDate(timeOfDay) {
+  const [h, m] = timeOfDay.split(':').map(Number);
+  const now = new Date();
+  const cand = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h || 0, m || 0, 0, 0);
+  if (cand <= now) cand.setDate(cand.getDate() + 1);
+  return localDateKey(cand);
 }
 
 /* ---------- Sticky defaults: заполнение формы ----------
@@ -230,15 +347,21 @@ function initialTaskValues(preselect = {}) {
     const base = BASE_TASK_DEFAULTS[field];
     const pre = preselect[field];
     let value = base;
+    let fromSticky = false;
     if (Array.isArray(pre) ? pre.length > 0 : (pre !== undefined && pre !== null && pre !== '')) {
       value = pre; // preselected — наивысший приоритет
     } else if (Array.isArray(base)
       ? Array.isArray(sticky[field]) && sticky[field].length > 0
-      : (sticky[field] !== undefined && sticky[field] !== null && sticky[field] !== '')) {
+      : (sticky[field] !== undefined && sticky[field] !== null && sticky[field] !== '' && sticky[field] !== 0)) {
       value = sticky[field];
-      applied.push(field);
+      fromSticky = true;
     }
     values[field] = value;
+    // «Предзаполнено» показываем только если значение реально отличается
+    // от базового: запомненный status=backlog ничем не отличается от базы.
+    if (fromSticky && (Array.isArray(value) ? value.length > 0 : value !== base)) {
+      applied.push(field);
+    }
   }
   return { values, applied };
 }
@@ -259,7 +382,7 @@ function visibleTasks() {
   if (priority) tasks = tasks.filter((t) => t.priority === priority);
   if (color) tasks = tasks.filter((t) => t.color === color);
   if (overdue) {
-    tasks = tasks.filter((t) => t.due_date && t.status !== 'done' && new Date(t.due_date) < new Date());
+    tasks = tasks.filter((t) => t.due_at && t.status !== 'done' && new Date(t.due_at) < new Date());
   }
   if (state.search) {
     const q = state.search.toLowerCase();
@@ -437,7 +560,11 @@ function openModal(taskId = null, presetDate = null, preselect = null) {
     $('#f-priority').value = task.priority;
     $('#f-assignee').value = task.assignee;
     $('#f-labels').value = task.labels ? task.labels.join(', ') : '';
-    $('#f-due').value = task.due_date ? localDateKey(new Date(task.due_date)) : '';
+    const due = parseDueTask(task);
+    $('#f-due').value = due ? due.date : '';
+    $('#f-due-time').value = due && !due.allDay ? due.time : '';
+    $('#f-due-allday').checked = due ? due.allDay : true;
+    $('#f-reminder').value = task.reminder_offset_minutes ? String(task.reminder_offset_minutes) : '';
     setColorPalette(task.color);
     state.sticky.applied = [];
     $('#modal-sticky-note').classList.add('hidden');
@@ -449,11 +576,24 @@ function openModal(taskId = null, presetDate = null, preselect = null) {
     $('#f-priority').value = values.priority;
     $('#f-assignee').value = values.assignee;
     $('#f-labels').value = values.labels.join(', ');
-    $('#f-due').value = presetDate || '';
     setColorPalette(values.color);
+    // Срок: preselect из календаря (конкретный день) > sticky-время суток
+    // (сегодня/завтра) > пусто. «Весь день» включён по умолчанию —
+    // совместимо со старым поведением «только дата».
+    let dueDate = presetDate || '';
+    let dueTime = '';
+    if (!presetDate && values.dueTimeOfDay) {
+      dueDate = stickyDueDate(values.dueTimeOfDay);
+      dueTime = values.dueTimeOfDay;
+    }
+    $('#f-due').value = dueDate;
+    $('#f-due-time').value = dueTime;
+    $('#f-due-allday').checked = !dueTime;
+    $('#f-reminder').value = values.reminderOffsetMinutes ? String(values.reminderOffsetMinutes) : '';
     state.sticky.applied = applied;
     $('#modal-sticky-note').classList.toggle('hidden', !applied.length);
   }
+  syncDueTimeInputs();
 
   const wrap = $('#modal-timeline-wrap');
   if (task) {
@@ -465,6 +605,68 @@ function openModal(taskId = null, presetDate = null, preselect = null) {
 
   $('#modal-backdrop').classList.remove('hidden');
   setTimeout(() => $('#f-title').focus(), 50);
+}
+
+/* DateTimePicker: «Весь день» прячет поле времени; live-подсказка,
+   если время сегодня уже прошло (предупреждение, но не блок). */
+function syncDueTimeInputs() {
+  const allDay = $('#f-due-allday').checked;
+  $('#f-due-time').classList.toggle('hidden', allDay);
+  $('#f-due-time').disabled = allDay;
+  updateDueWarning();
+}
+
+function updateDueWarning() {
+  const date = $('#f-due').value;
+  const time = $('#f-due-time').value;
+  const warn = $('#f-due-warn');
+  if (!date || !time || $('#f-due-allday').checked) {
+    warn.classList.add('hidden');
+    return;
+  }
+  const when = new Date(date + 'T' + time + ':00');
+  warn.classList.toggle('hidden', !(when <= new Date() && !state.editingId));
+}
+
+function wireDuePicker() {
+  $('#f-due-allday').addEventListener('change', syncDueTimeInputs);
+  $('#f-due').addEventListener('input', updateDueWarning);
+  $('#f-due-time').addEventListener('input', updateDueWarning);
+
+  // Быстрые пресеты. «Пн 09:00» = ближайший ПОНЕДЕЛЬНИК (не сегодня).
+  $('#f-due-presets').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip-btn');
+    if (!btn) return;
+    const now = new Date();
+    switch (btn.dataset.preset) {
+      case 'today1800':
+        $('#f-due').value = localDateKey(now);
+        $('#f-due-time').value = '18:00';
+        break;
+      case 'tomorrow1000': {
+        const t = new Date(now); t.setDate(t.getDate() + 1);
+        $('#f-due').value = localDateKey(t);
+        $('#f-due-time').value = '10:00';
+        break;
+      }
+      case 'nextMon0900': {
+        const mon = new Date(now);
+        mon.setDate(mon.getDate() + ((8 - mon.getDay()) % 7 || 7)); // след. понедельник
+        $('#f-due').value = localDateKey(mon);
+        $('#f-due-time').value = '09:00';
+        break;
+      }
+      case 'plus1h': {
+        const in1h = new Date(now.getTime() + 3600000);
+        in1h.setMinutes(in1h.getMinutes() >= 55 ? 59 : Math.round(in1h.getMinutes() / 5) * 5);
+        $('#f-due').value = localDateKey(in1h);
+        $('#f-due-time').value = `${String(in1h.getHours()).padStart(2, '0')}:${String(in1h.getMinutes()).padStart(2, '0')}`;
+        break;
+      }
+    }
+    $('#f-due-allday').checked = false;
+    syncDueTimeInputs();
+  });
 }
 
 function closeModal() {
@@ -505,9 +707,11 @@ function activityText(a) {
     case 'task.deleted':
       return `удалил(а) <b>«${esc(p.title || '')}»</b>`;
     case 'task.due_soon':
-      return `напоминает: у <b>«${esc(p.title || '')}»</b> срок ${esc(dueLabel(p.due_date))}`;
+      return `напоминает: у <b>«${esc(p.title || '')}»</b> срок ${esc(dueLabel(p.due_at))}`;
     case 'task.overdue':
-      return `⚠ просрочена <b>«${esc(p.title || '')}»</b> (срок ${esc(dueLabel(p.due_date))})`;
+      return `⚠ просрочена <b>«${esc(p.title || '')}»</b> (срок ${esc(dueLabel(p.due_at))})`;
+    case 'task.reminder':
+      return `🔔 персональное напоминание: <b>«${esc(p.title || '')}»</b> — срок близко`;
     default:
       return esc(a.type);
   }
@@ -526,6 +730,7 @@ function activityIcon(type) {
     case 'task.deleted': return '🗑️';
     case 'task.due_soon': return '🗓️';
     case 'task.overdue': return '⏰';
+    case 'task.reminder': return '🔔';
     default: return '⚡';
   }
 }
@@ -570,21 +775,29 @@ function localDateKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// Дата-время конца дня в ЛОКАЛЬНОМ времени: календарь и уведомления
-// работают в той же зоне, что и пользователь.
-function localEndOfDayISO(dateStr) {
-  return new Date(dateStr + 'T23:59:00').toISOString();
-}
-
 function tasksByDate() {
   const map = {};
   for (const t of state.tasks) {
-    if (!t.due_date) continue;
-    const key = dateKey(t.due_date);
-    (map[key] = map[key] || []).push(t);
+    const due = parseDueTask(t);
+    if (!due) continue;
+    // Ключ дня — в зоне постановки срока (граница «дня» у all-day задач).
+    (map[due.date] = map[due.date] || []).push(t);
   }
-  for (const k of Object.keys(map)) map[k].sort((a, b) => a.position - b.position);
+  // Внутри дня — по времени срока; all-day (23:59) естественно уходит в конец.
+  for (const k of Object.keys(map)) {
+    map[k].sort((a, b) => (dueSortKey(a) - dueSortKey(b)) || (a.position - b.position));
+  }
   return map;
+}
+
+// Ключ сортировки по сроку: all-day ставим в конец дня (23:59).
+function dueSortKey(t) {
+  if (!t.due_at) return Infinity;
+  const d = new Date(t.due_at);
+  if (t.due_all_day) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59).getTime();
+  }
+  return d.getTime();
 }
 
 function renderCalendar() {
@@ -625,7 +838,7 @@ function renderCalendar() {
   grid.innerHTML = html;
 
   // Несроковые задачи — можно перетащить в день
-  const unscheduled = state.tasks.filter((t) => !t.due_date);
+  const unscheduled = state.tasks.filter((t) => !t.due_at);
   $('#cal-unscheduled').innerHTML = unscheduled.length
     ? `<div class="cal-unscheduled-title">Без срока — перетащите в день календаря</div>
        <div class="cal-unscheduled-list">
@@ -683,8 +896,19 @@ function wireCalendar() {
 async function rescheduleTask(id, dateStr) {
   const task = state.tasks.find((t) => t.id === id);
   if (!task) return;
+  // Перенос дня сохраняет время срока: 18:30 из вторника → 18:30 в среду;
+  // у all-day (или бессрочного по времени) остаётся «весь день».
+  const due = parseDueTask(task);
+  const time = due && !due.allDay ? due.time : '';
   try {
-    await api(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ due_date: localEndOfDayISO(dateStr) }) });
+    await api(`/tasks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        due_at: dueAtISO(dateStr, time, !time),
+        due_all_day: !time,
+        due_timezone: VIEWER_TZ,
+      }),
+    });
     toast(`«${task.title}» → ${new Date(dateStr + 'T12:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}`);
     await refresh({ silent: true });
   } catch (err) {
@@ -706,7 +930,7 @@ function renderBell() {
   list.innerHTML = state.notifications
     .map((n) => `
       <div class="notif-item ${n.read ? '' : 'unread'}" data-id="${n.id}" data-task="${n.task_id}">
-        <div class="notif-icon">${n.type === 'overdue' ? '⏰' : '🗓️'}</div>
+        <div class="notif-icon">${n.type === 'overdue' ? '⏰' : n.type === 'reminder' ? '🔔' : '🗓️'}</div>
         <div class="notif-body">
           <div class="notif-title">${esc(n.title)}</div>
           <div class="notif-msg">${esc(n.message)}</div>
@@ -825,6 +1049,8 @@ function stickyFieldValueHTML(field, value) {
     case 'labels': return value && value.length
       ? value.map((l) => `<span class="label-chip">${esc(l)}</span>`).join(' ')
       : dash;
+    case 'dueTimeOfDay': return value ? esc(value) : dash;
+    case 'reminderOffsetMinutes': return value ? `за ${esc(humanizeMinutes(value))}` : dash;
     default: return value ? esc(String(value)) : dash;
   }
 }
@@ -879,6 +1105,7 @@ async function checkHealth() {
 
 /* ---------- События ---------- */
 function bindEvents() {
+  wireDuePicker();
   $('#btn-new').addEventListener('click', () => openModal(null, null, newTaskPreselect()));
   $('#modal-close').addEventListener('click', closeModal);
   $('#btn-cancel').addEventListener('click', closeModal);
@@ -905,6 +1132,15 @@ function bindEvents() {
       else if (field === 'color') setColorPalette(BASE_TASK_DEFAULTS.color);
       else if (field === 'assignee') $('#f-assignee').value = BASE_TASK_DEFAULTS.assignee;
       else if (field === 'labels') $('#f-labels').value = BASE_TASK_DEFAULTS.labels.join(', ');
+      else if (field === 'dueTimeOfDay') {
+        // Время срока не залипает датой: сброс = пустой срок.
+        $('#f-due').value = '';
+        $('#f-due-time').value = '';
+        $('#f-due-allday').checked = true;
+        syncDueTimeInputs();
+      } else if (field === 'reminderOffsetMinutes') {
+        $('#f-reminder').value = '';
+      }
     }
     state.sticky.applied = [];
     $('#modal-sticky-note').classList.add('hidden');
@@ -926,6 +1162,8 @@ function bindEvents() {
 
   $('#task-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const allDay = $('#f-due-allday').checked;
+    const dueAt = dueAtISO($('#f-due').value, $('#f-due-time').value, allDay);
     const payload = {
       title: $('#f-title').value.trim(),
       description: $('#f-description').value.trim(),
@@ -934,8 +1172,11 @@ function bindEvents() {
       assignee: $('#f-assignee').value.trim(),
       labels: $('#f-labels').value.split(',').map((s) => s.trim()).filter(Boolean),
       color: $('#f-color-palette').dataset.value || '',
-      // Пустая строка сбрасывает срок, отсутствие поля не трогает его.
-      due_date: $('#f-due').value ? localEndOfDayISO($('#f-due').value) : '',
+      // Срок: пустая строка = убрать срок; all-day = 23:59 локального дня.
+      due_at: dueAt,
+      due_all_day: allDay && !!dueAt,
+      due_timezone: VIEWER_TZ,
+      reminder_offset_minutes: $('#f-reminder').value ? Number($('#f-reminder').value) : null,
       // Опция «Запоминать параметры» выключена — просим сервер не запоминать.
       skip_sticky_update: !state.sticky.enabled,
     };
@@ -1084,6 +1325,8 @@ async function seedDemoData() {
     const day = 86400000;
     for (const [i, t] of demo.entries()) {
       if (t.priority === 'urgent' || i % 3 === 0) {
+        // Демо-данные сознательно шлют СТАРЫЙ формат (due_date): на них
+        // проверяется совместимость — сервер трактует их как «весь день».
         t.due_date = new Date(Date.now() + day * ((i % 7) - 2)).toISOString();
       }
       // Демо-задачи созданы без явного действия пользователя —

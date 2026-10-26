@@ -112,7 +112,7 @@ func (m *memRepo) ListDue(_ context.Context, notAfter time.Time) ([]domain.Task,
 	defer m.mu.Unlock()
 	var out []domain.Task
 	for _, t := range m.tasks {
-		if t.Status != domain.StatusDone && t.DueDate != nil && !t.DueDate.After(notAfter) {
+		if t.Status != domain.StatusDone && t.DueAt != nil && !t.DueAt.After(notAfter) {
 			out = append(out, *t)
 		}
 	}
@@ -426,4 +426,33 @@ func TestSearchFilter(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].(map[string]any)["title"] != "Kafka pipeline" {
 		t.Errorf("поиск «kafka» вернул: %v", tasks)
 	}
+}
+
+func (m *memRepo) ListRemindersDue(_ context.Context, now time.Time) ([]domain.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Task
+	for _, t := range m.tasks {
+		if t.Status == domain.StatusDone || t.DueAt == nil || t.ReminderOffsetMinutes == nil || t.ReminderSentAt != nil {
+			continue
+		}
+		cutoff := t.DueAt.Add(-time.Duration(*t.ReminderOffsetMinutes) * time.Minute)
+		if t.DueAt.After(now) && !cutoff.After(now) {  // граница окна включена, как в SQL (<=)
+			out = append(out, *t)
+		}
+	}
+	return out, nil
+}
+
+func (m *memRepo) MarkReminderSent(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return storage.ErrNotFound
+	}
+	if t.ReminderSentAt == nil {
+		t.ReminderSentAt = &at
+	}
+	return nil
 }
