@@ -179,6 +179,17 @@
           <span>Исполнитель</span>
           <input id="f-assignee" class="input" maxlength="100" placeholder="Имя" autocomplete="off">
         </label>
+        <label class="field">
+          <span>Напомнить <em>(до наступления срока)</em></span>
+          <select id="f-reminder" class="input">
+            <option value="">Без напоминания</option>
+            <option value="5">За 5 минут</option>
+            <option value="15">За 15 минут</option>
+            <option value="60">За 1 час</option>
+            <option value="1440">За 1 день</option>
+          </select>
+        </label>
+      </div>
       <label class="field">
         <span>Срок <em>(дата и время)</em></span>
         <div class="due-picker" id="f-due-picker">
@@ -198,16 +209,6 @@
           </div>
           <div class="due-warn hidden" id="f-due-warn">⚠ Это время уже прошло — задача сразу попадёт в просроченные</div>
         </div>
-      </label>
-      <label class="field">
-        <span>Напомнить <em>(до наступления срока)</em></span>
-        <select id="f-reminder" class="input">
-          <option value="">Без напоминания</option>
-          <option value="5">За 5 минут</option>
-          <option value="15">За 15 минут</option>
-          <option value="60">За 1 час</option>
-          <option value="1440">За 1 день</option>
-        </select>
       </label>
       <label class="field">
         <span>Метки <em>(через запятую)</em></span>
