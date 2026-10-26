@@ -41,3 +41,12 @@ type NotificationRepository interface {
 	MarkAllRead(ctx context.Context) error
 	CountUnread(ctx context.Context) (int, error)
 }
+
+// DefaultsRepository — «залипающие» значения формы новой задачи (per-user).
+// Хранятся как нормализованный JSON domain.TaskDefaults.
+type DefaultsRepository interface {
+	// Get возвращает значения и время обновления; ErrNotFound, если их ещё нет.
+	Get(ctx context.Context, actor string) (domain.TaskDefaults, time.Time, error)
+	// Put сохраняет значения и возвращает время записи (источник истины для гонок).
+	Put(ctx context.Context, actor string, d domain.TaskDefaults) (time.Time, error)
+}

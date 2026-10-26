@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaskFlow — трекер задач</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/assistant.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
 </head>
 <body>
@@ -56,16 +57,27 @@
         <option value="medium">◾ Средний</option>
         <option value="low">◻️ Низкий</option>
       </select>
+      <select id="filter-color" class="input">
+        <option value="">Цвет: любой</option>
+      </select>
       <label class="overdue-toggle">
         <input type="checkbox" id="filter-overdue">
         <span>Только просроченные</span>
       </label>
+      <div class="legend-wrap">
+        <button class="link-btn legend-btn" id="btn-legend">🎨 Что означают цвета?</button>
+        <div class="color-legend hidden" id="color-legend">
+          <div class="legend-head">Цветовые метки</div>
+          <div id="color-legend-list"></div>
+        </div>
+      </div>
     </div>
 
     <nav class="side-nav">
       <button class="nav-btn active" id="nav-board">📋 Доска</button>
       <button class="nav-btn" id="nav-calendar">📅 Календарь</button>
       <button class="nav-btn" id="nav-activity">⚡ Активность</button>
+      <button class="nav-btn" id="nav-settings">⚙️ Настройки</button>
     </nav>
 
     <div class="side-footer">
@@ -176,6 +188,15 @@
         <span>Метки <em>(через запятую)</em></span>
         <input id="f-labels" class="input" placeholder="backend, инфраструктура" autocomplete="off">
       </label>
+      <label class="field">
+        <span>Цвет <em>(метка статуса)</em></span>
+        <div class="palette" id="f-color-palette"></div>
+      </label>
+
+      <div class="sticky-note hidden" id="modal-sticky-note">
+        <span class="sticky-note-text">✨ Предзаполнено из прошлой задачи</span>
+        <button type="button" class="link-btn" id="btn-sticky-reset">Сбросить</button>
+      </div>
 
       <div class="modal-timeline hidden" id="modal-timeline-wrap">
         <div class="timeline-title">История (Kafka → PostgreSQL)</div>
@@ -192,8 +213,37 @@
   </div>
 </div>
 
+<!-- Модальное окно настроек -->
+<div class="modal-backdrop hidden" id="settings-backdrop">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2>Настройки</h2>
+      <button class="icon-btn" id="settings-close" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-section">
+        <div class="settings-title">Значения по умолчанию для новых задач</div>
+        <label class="overdue-toggle sticky-toggle">
+          <input type="checkbox" id="settings-sticky-enabled">
+          <span>Запоминать параметры последней задачи</span>
+        </label>
+        <div id="sticky-values-list"></div>
+        <div class="settings-actions">
+          <button type="button" class="btn-ghost" id="btn-sticky-reset-all">Сбросить всё</button>
+        </div>
+        <p class="settings-hint">
+          При создании задачи поля заполняются значениями из последней
+          созданной или отредактированной задачи. Сброшенные поля вернутся
+          к стандартным значениям (Бэклог · Средний).
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toasts" id="toasts"></div>
 
 <script src="/app.js"></script>
+<script src="/assistant.js"></script>
 </body>
 </html>

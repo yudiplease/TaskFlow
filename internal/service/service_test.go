@@ -191,3 +191,75 @@ func TestCreate_SequentialPositions(t *testing.T) {
 		t.Errorf("позиции не возрастают: %v затем %v", first.Position, second.Position)
 	}
 }
+
+func TestColor_CreateValidatesAndNormalizes(t *testing.T) {
+	svc, _, _, _ := newService(t)
+	ctx := context.Background()
+
+	// Нижний регистр и пробелы приводятся к каноническому HEX.
+	task, err := svc.Create(ctx, service.CreateTaskInput{Title: "С цветом", Color: " #e53935 "}, "t")
+	if err != nil {
+		t.Fatalf("Create с валидным цветом: %v", err)
+	}
+	if task.Color != "#E53935" {
+		t.Errorf("цвет = %q, want #E53935", task.Color)
+	}
+
+	// Пустая строка = без метки.
+	plain, err := svc.Create(ctx, service.CreateTaskInput{Title: "Без цвета", Color: "   "}, "t")
+	if err != nil {
+		t.Fatalf("Create с пустым цветом: %v", err)
+	}
+	if plain.Color != "" {
+		t.Errorf("пустой цвет должен остаться пустым, получено %q", plain.Color)
+	}
+}
+
+func TestColor_CreateRejectsUnknown(t *testing.T) {
+	for _, color := range []string{"#FF0000", "red", "#E5393", "javascript:alert(1)"} {
+		_, err := svcCreate(t, service.CreateTaskInput{Title: "x", Color: color})
+		if !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("цвет %q: ожидалась ErrInvalid, получено %v", color, err)
+		}
+	}
+}
+
+func TestColor_PatchAndClear(t *testing.T) {
+	svc, _, _, pub := newService(t)
+	ctx := context.Background()
+	task, err := svc.Create(ctx, service.CreateTaskInput{Title: "Метка"}, "t")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	violet := "#8E24AA"
+	updated, err := svc.Update(ctx, task.ID, service.UpdateTaskInput{Color: &violet}, "Вы")
+	if err != nil {
+		t.Fatalf("Update color: %v", err)
+	}
+	if updated.Color != violet {
+		t.Errorf("цвет после PATCH = %q, want %q", updated.Color, violet)
+	}
+
+	empty := ""
+	cleared, err := svc.Update(ctx, task.ID, service.UpdateTaskInput{Color: &empty}, "Вы")
+	if err != nil {
+		t.Fatalf("Update color (сброс): %v", err)
+	}
+	if cleared.Color != "" {
+		t.Errorf("после сброса цвет = %q, want пусто", cleared.Color)
+	}
+
+	bad := "#123ABC"
+	if _, err := svc.Update(ctx, task.ID, service.UpdateTaskInput{Color: &bad}, "Вы"); !errors.Is(err, domain.ErrInvalid) {
+		t.Errorf("чужой HEX: ожидалась ErrInvalid, получено %v", err)
+	}
+
+	// PATCH одним цветом не должен менять другие поля.
+	if cleared.Title != "Метка" || cleared.Status != domain.StatusBacklog {
+		t.Errorf("PATCH цвета тронул другие поля: %+v", cleared)
+	}
+	if got := pub.types()[len(pub.types())-1]; got != service.EventTaskUpdated {
+		t.Errorf("последнее событие = %q, want task.updated", got)
+	}
+}

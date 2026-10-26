@@ -72,6 +72,7 @@ func main() {
 
 	svc := service.NewTaskService(postgres.NewTasks(pool), postgres.NewActivity(pool), publisher, m)
 	notificationsSvc := service.NewNotifications(postgres.NewNotifications(pool))
+	defaultsSvc := service.NewDefaultsService(postgres.NewDefaults(pool))
 
 	// Планировщик напоминаний: проверяет сроки раз в минуту.
 	notif := notifier.New(postgres.NewTasks(pool), postgres.NewNotifications(pool), publisher, m, log)
@@ -83,6 +84,7 @@ func main() {
 		Config:        cfg,
 		Service:       svc,
 		Notifications: notificationsSvc,
+		Defaults:      defaultsSvc,
 		Metrics:       m,
 		Log:           log,
 		PingPostgres: func() error {

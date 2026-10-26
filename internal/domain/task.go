@@ -56,6 +56,7 @@ type Task struct {
 	Priority    Priority   `json:"priority"`
 	Assignee    string     `json:"assignee"`
 	Labels      []string   `json:"labels"`
+	Color       string     `json:"color,omitempty"` // HEX из справочника ColorTags; пусто = без метки
 	DueDate     *time.Time `json:"due_date,omitempty"`
 	Position    float64    `json:"position"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -68,6 +69,7 @@ type TaskFilter struct {
 	Priority *Priority
 	Assignee string
 	Label    string
+	Color    string // канонический HEX из справочника; пусто = без фильтра
 	Search   string
 	Limit    int
 	Offset   int

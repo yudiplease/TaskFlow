@@ -101,6 +101,7 @@ func main() {
 
 	svc := service.NewTaskService(tasksRepo, activityRepo, bus, m)
 	notificationsSvc := service.NewNotifications(notifRepo)
+	defaultsSvc := service.NewDefaultsService(sqlite.NewDefaults(store))
 
 	workers := supervisor.NewGroup(ctx, log, supervisor.Options{})
 	notif := notifier.New(tasksRepo, notifRepo, bus, m, log)
@@ -131,6 +132,7 @@ func main() {
 		Config:        config.Load(),
 		Service:       svc,
 		Notifications: notificationsSvc,
+		Defaults:      defaultsSvc,
 		Metrics:       m,
 		Log:           log,
 		PingPostgres: func() error {
@@ -142,8 +144,16 @@ func main() {
 		Mode:         "desktop",
 	})
 
+	handler := api.Handler()
+	// Озвучка Аси: POST /api/tts синтезирует WAV через SAPI (RHVoice) —
+	// безопасно в любом режиме, включая headless.
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/tts", ttsHandler(filepath.Dir(*dbPath), log))
+	mux.Handle("/", handler)
+	handler = mux
+
 	srv := &http.Server{
-		Handler:      api.Handler(),
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}

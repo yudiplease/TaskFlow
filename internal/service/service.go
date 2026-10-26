@@ -48,11 +48,13 @@ type CreateTaskInput struct {
 	Priority    domain.Priority
 	Assignee    string
 	Labels      []string
+	Color       string // HEX из справочника domain.ColorTags; пусто = без метки
 	DueDate     *time.Time
 }
 
 // UpdateTaskInput — частичное обновление; nil = не менять поле.
 // ClearDueDate=true сбрасывает срок (фронтенд шлёт due_date="" для очистки).
+// Color — указатель: пустая строка сбрасывает метку, nil оставляет как было.
 type UpdateTaskInput struct {
 	Title        *string
 	Description  *string
@@ -60,6 +62,7 @@ type UpdateTaskInput struct {
 	Priority     *domain.Priority
 	Assignee     *string
 	Labels       *[]string
+	Color        *string
 	DueDate      *time.Time
 	ClearDueDate bool
 	Position     *float64
@@ -90,6 +93,10 @@ func (s *TaskService) Create(ctx context.Context, in CreateTaskInput, actor stri
 	if err != nil {
 		return nil, err
 	}
+	color, err := domain.NormalizeColor(in.Color)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	pos, err := s.tasks.MaxPosition(ctx, in.Status)
@@ -105,6 +112,7 @@ func (s *TaskService) Create(ctx context.Context, in CreateTaskInput, actor stri
 		Priority:    in.Priority,
 		Assignee:    strings.TrimSpace(in.Assignee),
 		Labels:      labels,
+		Color:       color,
 		DueDate:     in.DueDate,
 		Position:    pos + 1000,
 		CreatedAt:   now,
@@ -186,6 +194,13 @@ func (s *TaskService) Update(ctx context.Context, id string, in UpdateTaskInput,
 			return nil, err
 		}
 		t.Labels = labels
+	}
+	if in.Color != nil {
+		color, err := domain.NormalizeColor(*in.Color)
+		if err != nil {
+			return nil, err
+		}
+		t.Color = color
 	}
 	if in.DueDate != nil {
 		t.DueDate = in.DueDate

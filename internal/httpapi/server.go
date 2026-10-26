@@ -22,6 +22,7 @@ type Server struct {
 	cfg           config.Config
 	svc           *service.TaskService
 	notifications *service.Notifications
+	defaults      *service.DefaultsService
 	metrics       *metrics.Metrics
 	log           *slog.Logger
 	pingFn        func() error
@@ -36,6 +37,7 @@ type Deps struct {
 	Config        config.Config
 	Service       *service.TaskService
 	Notifications *service.Notifications
+	Defaults      *service.DefaultsService
 	Metrics       *metrics.Metrics
 	Log           *slog.Logger
 	PingPostgres  func() error
@@ -57,6 +59,7 @@ func NewServer(d Deps) *Server {
 		cfg:           d.Config,
 		svc:           d.Service,
 		notifications: d.Notifications,
+		defaults:      d.Defaults,
 		metrics:       d.Metrics,
 		log:           log,
 		pingFn:        d.PingPostgres,
@@ -83,6 +86,11 @@ func (s *Server) Handler() http.Handler {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/stats", s.handleStats)
 		r.Get("/activity", s.handleRecentActivity)
+		r.Get("/colors", s.handleColors)
+		r.Get("/defaults", s.handleGetDefaults)
+		r.Put("/defaults", s.handlePutDefaults)
+		r.Get("/defaults", s.handleGetDefaults)
+		r.Put("/defaults", s.handlePutDefaults)
 
 		r.Get("/notifications", s.handleNotifications)
 		r.Post("/notifications/read-all", s.handleNotificationsReadAll)
@@ -96,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 				r.Patch("/", s.handleUpdateTask)
 				r.Delete("/", s.handleDeleteTask)
 				r.Post("/move", s.handleMoveTask)
+				r.Patch("/color", s.handleColorTask)
 				r.Get("/activity", s.handleTaskActivity)
 			})
 		})
@@ -138,7 +147,7 @@ func staticExists(fsys fs.FS, path string) bool {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Actor")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

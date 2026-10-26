@@ -12,19 +12,34 @@ const STATUSES = [
 const PRIORITY_LABELS = { urgent: '🔥 Срочно', high: 'Высокий', medium: 'Средний', low: 'Низкий' };
 const ACTOR = 'Вы';
 
+/* ---------- Sticky / smart defaults ----------
+   Какие поля «залипают» между задачами. Поля, привязанные к конкретной
+   задаче (title, description, due_date, id), запоминать нельзя. */
+const STICKY_FIELDS = ['status', 'priority', 'color', 'assignee', 'labels'];
+const STICKY_FIELD_LABELS = { status: 'Колонка', priority: 'Приоритет', color: 'Цвет', assignee: 'Исполнитель', labels: 'Метки' };
+// База, если ни preselect, ни sticky-значения не заданы.
+const BASE_TASK_DEFAULTS = { status: 'backlog', priority: 'medium', color: '', assignee: '', labels: [] };
+
 const state = {
   tasks: [],
   stats: null,
+  colors: [], // справочник цветовых меток (GET /api/colors) — единый источник
   mode: 'server', // 'desktop' приходит из /readyz — влияет на демо-данные
   view: 'board',
   search: '',
-  filters: { assignee: '', priority: '', overdue: false },
+  filters: { assignee: '', priority: '', color: '', overdue: false },
   editingId: null,
   draggingId: null,
   calMonth: new Date(),
   notifications: [],
   unread: 0,
   lastSeenNotifId: Number(localStorage.getItem('lastNotifId') || 0),
+  sticky: {
+    enabled: localStorage.getItem('tf_sticky_enabled') !== 'off',
+    values: {},       // последние запомненные значения sticky-полей
+    updatedAt: null,  // updated_at записи на сервере (для разрешения гонок)
+    applied: [],      // какие поля текущей формы заполнены из sticky
+  },
 };
 
 /* ---------- API ---------- */
@@ -83,6 +98,8 @@ function timeAgo(iso) {
 
 /* ---------- Тосты ---------- */
 function toast(message, type = 'success') {
+  // Ася (assistant.js) слушает это событие и реагирует на происходящее.
+  window.dispatchEvent(new CustomEvent('tf-toast', { detail: { message, type } }));
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.innerHTML = `${type === 'success' ? '✓' : '⚠'} ${esc(message)}`;
@@ -93,12 +110,154 @@ function toast(message, type = 'success') {
   }, 3200);
 }
 
+/* ---------- Цветовые метки ---------- */
+async function loadColors() {
+  try {
+    const data = await api('/colors');
+    state.colors = data.colors || [];
+  } catch {
+    state.colors = []; // фильтр/палитра/легенда просто останутся пустыми
+  }
+  $('#filter-color').innerHTML = '<option value="">Цвет: любой</option>' +
+    state.colors.map((c) => `<option value="${esc(c.hex)}">${esc(c.emoji)} ${esc(c.title)}</option>`).join('');
+  $('#f-color-palette').innerHTML =
+    `<button type="button" class="palette-dot none" data-color="" title="Без цвета">✕</button>` +
+    state.colors.map((c) =>
+      `<button type="button" class="palette-dot" data-color="${esc(c.hex)}" style="background:${esc(c.hex)}" title="${esc(`${c.emoji} ${c.title} — ${c.description}`)}"></button>`
+    ).join('');
+  $('#color-legend-list').innerHTML = state.colors.map((c) => `
+    <div class="legend-row">
+      <span class="legend-dot" style="background:${esc(c.hex)}"></span>
+      <div>
+        <div class="legend-title">${esc(c.emoji)} ${esc(c.title)}</div>
+        <div class="legend-desc">${esc(c.description)}</div>
+      </div>
+    </div>`).join('');
+}
+
+function setColorPalette(hex) {
+  const pal = $('#f-color-palette');
+  pal.dataset.value = hex || '';
+  pal.querySelectorAll('.palette-dot').forEach((d) => {
+    d.classList.toggle('selected', (d.dataset.color || '') === (hex || ''));
+  });
+}
+
+/* ---------- Sticky defaults: синхронизация ----------
+   Сервер — источник истины: он сам обновляет значения при сохранении
+   задач (POST/PATCH). localStorage — мгновенный кэш; при загрузке
+   побеждает та сторона, у которой свежее updated_at. */
+function saveStickyLocal() {
+  localStorage.setItem('tf_task_defaults_v1', JSON.stringify({
+    defaults: state.sticky.values,
+    updated_at: state.sticky.updatedAt,
+  }));
+}
+
+function normalizeDefaultsPayload(data) {
+  const ts = data && data.updated_at ? String(data.updated_at) : '';
+  return {
+    values: data && data.defaults && Object.keys(data.defaults).length ? data.defaults : {},
+    updatedAt: ts && !ts.startsWith('0001-') ? ts : null,
+  };
+}
+
+async function pushDefaults(values) {
+  const data = await api('/defaults', { method: 'PUT', body: JSON.stringify(values) });
+  const norm = normalizeDefaultsPayload(data);
+  state.sticky.values = norm.values;
+  state.sticky.updatedAt = norm.updatedAt;
+  saveStickyLocal();
+}
+
+async function loadDefaults() {
+  // 1) Мгновенный старт из localStorage.
+  try {
+    const cached = JSON.parse(localStorage.getItem('tf_task_defaults_v1') || 'null');
+    if (cached && cached.defaults) {
+      state.sticky.values = cached.defaults;
+      state.sticky.updatedAt = cached.updated_at || null;
+    }
+  } catch { /* повреждённый кэш игнорируем */ }
+
+  // 2) Сверка с сервером по updated_at.
+  try {
+    const { values, updatedAt } = normalizeDefaultsPayload(await api('/defaults'));
+    if (!updatedAt) {
+      // На сервере ещё нет записи — переносим туда локальные значения.
+      if (Object.keys(state.sticky.values).length) await pushDefaults(state.sticky.values);
+    } else if (!state.sticky.updatedAt || new Date(updatedAt) >= new Date(state.sticky.updatedAt)) {
+      // Сервер свежее или равен — он источник истины.
+      state.sticky.values = values;
+      state.sticky.updatedAt = updatedAt;
+      saveStickyLocal();
+    } else {
+      // Локаль свежее (например, сохранение при недоступном сервере) — выгружаем.
+      await pushDefaults(state.sticky.values);
+    }
+  } catch { /* офлайн — работаем с кэшем */ }
+}
+
+// После успешного сохранения задачи из формы: сервер уже запомнил значения
+// (POST/PATCH делает это сам) — синхронизируем локальный кэш и updated_at.
+function rememberStickyFromForm(payload) {
+  if (!state.sticky.enabled) return;
+  // Форма шлёт все sticky-поля — запоминаем их как есть.
+  state.sticky.values = {
+    status: payload.status,
+    priority: payload.priority,
+    color: payload.color || '',
+    assignee: payload.assignee || '',
+    labels: payload.labels || [],
+  };
+  saveStickyLocal();
+  api('/defaults').then((data) => {
+    const norm = normalizeDefaultsPayload(data);
+    state.sticky.values = norm.values;
+    state.sticky.updatedAt = norm.updatedAt;
+    saveStickyLocal();
+  }).catch(() => { /* локальные значения уже применены */ });
+}
+
+/* ---------- Sticky defaults: заполнение формы ----------
+   Приоритет источников: preselected (фильтр/канбан) > sticky-значения
+   пользователя > базовые дефолты. */
+function initialTaskValues(preselect = {}) {
+  const sticky = state.sticky.enabled ? state.sticky.values : {};
+  const values = {};
+  const applied = [];
+  for (const field of STICKY_FIELDS) {
+    const base = BASE_TASK_DEFAULTS[field];
+    const pre = preselect[field];
+    let value = base;
+    if (Array.isArray(pre) ? pre.length > 0 : (pre !== undefined && pre !== null && pre !== '')) {
+      value = pre; // preselected — наивысший приоритет
+    } else if (Array.isArray(base)
+      ? Array.isArray(sticky[field]) && sticky[field].length > 0
+      : (sticky[field] !== undefined && sticky[field] !== null && sticky[field] !== '')) {
+      value = sticky[field];
+      applied.push(field);
+    }
+    values[field] = value;
+  }
+  return { values, applied };
+}
+
+// preselected из активных фильтров: новая задача наследует контекст доски.
+function newTaskPreselect() {
+  return {
+    priority: state.filters.priority || undefined,
+    color: state.filters.color || undefined,
+  };
+}
+
 /* ---------- Рендер доски ---------- */
 function visibleTasks() {
   let tasks = state.tasks;
-  const { assignee, priority, overdue } = state.filters;
+  const { assignee, priority, color, overdue } = state.filters;
   if (assignee) tasks = tasks.filter((t) => t.assignee === assignee);
   if (priority) tasks = tasks.filter((t) => t.priority === priority);
+  if (color) tasks = tasks.filter((t) => t.color === color);
   if (overdue) {
     tasks = tasks.filter((t) => t.due_date && t.status !== 'done' && new Date(t.due_date) < new Date());
   }
@@ -111,14 +270,23 @@ function visibleTasks() {
   return tasks;
 }
 
+function colorTitle(hex) {
+  const c = state.colors.find((x) => x.hex === hex);
+  return c ? `${c.emoji} ${c.title}` : hex;
+}
+
 function cardHTML(task) {
   const due = formatDue(task);
   const labels = (task.labels || [])
     .map((l) => `<span class="label-chip">${esc(l)}</span>`)
     .join('');
+  const colorDot = task.color
+    ? `<span class="card-color" style="background:${esc(task.color)}" title="${esc(colorTitle(task.color))}"></span>`
+    : '';
   return `
     <div class="card p-${esc(task.priority)}" draggable="true" data-id="${task.id}">
       <div class="card-top">
+        ${colorDot}
         <span class="prio-pill ${esc(task.priority)}">${PRIORITY_LABELS[task.priority] || task.priority}</span>
         ${due ? `<span class="card-due ${due.cls}">${due.label}</span>` : ''}
       </div>
@@ -254,7 +422,7 @@ function statusTitle(id) {
 }
 
 /* ---------- Модальное окно ---------- */
-function openModal(taskId = null, presetDate = null) {
+function openModal(taskId = null, presetDate = null, preselect = null) {
   state.editingId = taskId;
   const task = taskId ? state.tasks.find((t) => t.id === taskId) : null;
 
@@ -262,15 +430,30 @@ function openModal(taskId = null, presetDate = null) {
   $('#btn-save').textContent = task ? 'Сохранить' : 'Создать';
   $('#btn-delete').classList.toggle('hidden', !task);
 
-  $('#f-title').value = task ? task.title : '';
-  $('#f-description').value = task ? task.description : '';
-  $('#f-status').value = task ? task.status : 'backlog';
-  $('#f-priority').value = task ? task.priority : 'medium';
-  $('#f-assignee').value = task ? task.assignee : '';
-  $('#f-labels').value = task && task.labels ? task.labels.join(', ') : '';
-  $('#f-due').value = task && task.due_date
-    ? localDateKey(new Date(task.due_date))
-    : (presetDate || '');
+  if (task) {
+    $('#f-title').value = task.title;
+    $('#f-description').value = task.description;
+    $('#f-status').value = task.status;
+    $('#f-priority').value = task.priority;
+    $('#f-assignee').value = task.assignee;
+    $('#f-labels').value = task.labels ? task.labels.join(', ') : '';
+    $('#f-due').value = task.due_date ? localDateKey(new Date(task.due_date)) : '';
+    setColorPalette(task.color);
+    state.sticky.applied = [];
+    $('#modal-sticky-note').classList.add('hidden');
+  } else {
+    const { values, applied } = initialTaskValues(preselect || newTaskPreselect());
+    $('#f-title').value = '';
+    $('#f-description').value = '';
+    $('#f-status').value = values.status;
+    $('#f-priority').value = values.priority;
+    $('#f-assignee').value = values.assignee;
+    $('#f-labels').value = values.labels.join(', ');
+    $('#f-due').value = presetDate || '';
+    setColorPalette(values.color);
+    state.sticky.applied = applied;
+    $('#modal-sticky-note').classList.toggle('hidden', !applied.length);
+  }
 
   const wrap = $('#modal-timeline-wrap');
   if (task) {
@@ -432,7 +615,7 @@ function renderCalendar() {
           <button class="cal-add" data-date="${key}" title="Создать задачу на этот день">＋</button>
         </div>
         ${shown.map((t) => `
-          <div class="cal-task p-${esc(t.priority)} ${t.status === 'done' ? 'done' : ''}" draggable="true" data-id="${t.id}" title="${esc(t.title)}">
+          <div class="cal-task p-${esc(t.priority)} ${t.status === 'done' ? 'done' : ''}" draggable="true" data-id="${t.id}" title="${esc(t.title)}"${t.color ? ` style="border-left:3px solid ${esc(t.color)}"` : ''}>
             <span class="cal-task-title">${esc(t.title)}</span>
           </div>`).join('')}
         ${tasks.length > 3 ? `<div class="cal-more">＋ ещё ${tasks.length - 3}</div>` : ''}
@@ -582,6 +765,7 @@ function wireNotifications() {
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.bell-wrap')) $('#notif-panel').classList.add('hidden');
+    if (!e.target.closest('.legend-wrap')) $('#color-legend').classList.add('hidden');
   });
 
   $('#btn-enable-push').addEventListener('click', async () => {
@@ -616,6 +800,44 @@ function wireNotifications() {
 function updatePushButton() {
   const can = 'Notification' in window && Notification.permission === 'granted';
   $('#btn-enable-push').classList.toggle('hidden', can);
+}
+
+/* ---------- Настройки профиля ---------- */
+function openSettings() {
+  $('#settings-sticky-enabled').checked = state.sticky.enabled;
+  renderSettingsDefaults();
+  $('#settings-backdrop').classList.remove('hidden');
+}
+
+function closeSettings() {
+  $('#settings-backdrop').classList.add('hidden');
+}
+
+function stickyFieldValueHTML(field, value) {
+  const dash = '<span class="sticky-empty">—</span>';
+  switch (field) {
+    case 'status': return value ? esc(statusTitle(value)) : dash;
+    case 'priority': return value ? esc(PRIORITY_LABELS[value] || value) : dash;
+    case 'color': return value
+      ? `<span class="sticky-color" style="background:${esc(value)}"></span>${esc(colorTitle(value))}`
+      : dash;
+    case 'assignee': return value ? esc(value) : dash;
+    case 'labels': return value && value.length
+      ? value.map((l) => `<span class="label-chip">${esc(l)}</span>`).join(' ')
+      : dash;
+    default: return value ? esc(String(value)) : dash;
+  }
+}
+
+function renderSettingsDefaults() {
+  const list = $('#sticky-values-list');
+  if (!list) return;
+  list.innerHTML = STICKY_FIELDS.map((field) => `
+    <div class="sticky-row">
+      <span class="sticky-row-label">${STICKY_FIELD_LABELS[field]}</span>
+      <span class="sticky-row-value">${stickyFieldValueHTML(field, state.sticky.values[field])}</span>
+      <button type="button" class="sticky-row-reset" data-field="${field}" title="Сбросить это поле">✕</button>
+    </div>`).join('');
 }
 
 /* ---------- Данные ---------- */
@@ -657,18 +879,35 @@ async function checkHealth() {
 
 /* ---------- События ---------- */
 function bindEvents() {
-  $('#btn-new').addEventListener('click', () => openModal());
+  $('#btn-new').addEventListener('click', () => openModal(null, null, newTaskPreselect()));
   $('#modal-close').addEventListener('click', closeModal);
   $('#btn-cancel').addEventListener('click', closeModal);
   $('#modal-backdrop').addEventListener('click', (e) => {
     if (e.target === $('#modal-backdrop')) closeModal();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
+    if (e.key === 'Escape') {
+      closeModal();
+      closeSettings();
+    }
     if (e.key === '/' && !e.target.closest('input, textarea, select')) {
       e.preventDefault();
       $('#search').focus();
     }
+  });
+
+  // Индикатор «Предзаполнено из прошлой задачи»: вернуть sticky-поля
+  // к базовым значениям (само запомненное не стирается).
+  $('#btn-sticky-reset').addEventListener('click', () => {
+    for (const field of state.sticky.applied) {
+      if (field === 'status') $('#f-status').value = BASE_TASK_DEFAULTS.status;
+      else if (field === 'priority') $('#f-priority').value = BASE_TASK_DEFAULTS.priority;
+      else if (field === 'color') setColorPalette(BASE_TASK_DEFAULTS.color);
+      else if (field === 'assignee') $('#f-assignee').value = BASE_TASK_DEFAULTS.assignee;
+      else if (field === 'labels') $('#f-labels').value = BASE_TASK_DEFAULTS.labels.join(', ');
+    }
+    state.sticky.applied = [];
+    $('#modal-sticky-note').classList.add('hidden');
   });
 
   $('#btn-delete').addEventListener('click', async () => {
@@ -694,8 +933,11 @@ function bindEvents() {
       priority: $('#f-priority').value,
       assignee: $('#f-assignee').value.trim(),
       labels: $('#f-labels').value.split(',').map((s) => s.trim()).filter(Boolean),
+      color: $('#f-color-palette').dataset.value || '',
       // Пустая строка сбрасывает срок, отсутствие поля не трогает его.
       due_date: $('#f-due').value ? localEndOfDayISO($('#f-due').value) : '',
+      // Опция «Запоминать параметры» выключена — просим сервер не запоминать.
+      skip_sticky_update: !state.sticky.enabled,
     };
     try {
       if (state.editingId) {
@@ -705,6 +947,7 @@ function bindEvents() {
         await api('/tasks', { method: 'POST', body: JSON.stringify(payload) });
         toast('Задача создана');
       }
+      rememberStickyFromForm(payload);
       closeModal();
       await refresh({ silent: true });
     } catch (err) {
@@ -729,6 +972,19 @@ function bindEvents() {
     state.filters.priority = e.target.value;
     renderBoard();
   });
+  $('#filter-color').addEventListener('change', (e) => {
+    state.filters.color = e.target.value;
+    renderBoard();
+  });
+  $('#f-color-palette').addEventListener('click', (e) => {
+    const dot = e.target.closest('.palette-dot');
+    if (!dot) return;
+    setColorPalette(dot.dataset.color);
+  });
+  $('#btn-legend').addEventListener('click', (e) => {
+    e.stopPropagation();
+    $('#color-legend').classList.toggle('hidden');
+  });
   $('#filter-overdue').addEventListener('change', (e) => {
     state.filters.overdue = e.target.checked;
     renderBoard();
@@ -737,6 +993,42 @@ function bindEvents() {
   $('#nav-board').addEventListener('click', () => switchView('board'));
   $('#nav-calendar').addEventListener('click', () => switchView('calendar'));
   $('#nav-activity').addEventListener('click', () => switchView('activity'));
+  $('#nav-settings').addEventListener('click', openSettings);
+
+  $('#settings-close').addEventListener('click', closeSettings);
+  $('#settings-backdrop').addEventListener('click', (e) => {
+    if (e.target === $('#settings-backdrop')) closeSettings();
+  });
+
+  $('#settings-sticky-enabled').addEventListener('change', (e) => {
+    state.sticky.enabled = e.target.checked;
+    localStorage.setItem('tf_sticky_enabled', e.target.checked ? 'on' : 'off');
+  });
+
+  // Сброс одного sticky-поля: PUT без него (пустое значение = «не запомнено»).
+  $('#sticky-values-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.sticky-row-reset');
+    if (!btn) return;
+    try {
+      const next = { ...state.sticky.values };
+      delete next[btn.dataset.field];
+      await pushDefaults(next);
+      renderSettingsDefaults();
+      toast(`«${STICKY_FIELD_LABELS[btn.dataset.field]}» сброшено`);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  $('#btn-sticky-reset-all').addEventListener('click', async () => {
+    try {
+      await pushDefaults({});
+      renderSettingsDefaults();
+      toast('Значения по умолчанию сброшены');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
 
   $('#cal-prev').addEventListener('click', () => shiftMonth(-1));
   $('#cal-next').addEventListener('click', () => shiftMonth(1));
@@ -794,7 +1086,9 @@ async function seedDemoData() {
       if (t.priority === 'urgent' || i % 3 === 0) {
         t.due_date = new Date(Date.now() + day * ((i % 7) - 2)).toISOString();
       }
-      await api('/tasks', { method: 'POST', body: JSON.stringify(t) });
+      // Демо-задачи созданы без явного действия пользователя —
+      // их параметры не должны «залипать».
+      await api('/tasks', { method: 'POST', body: JSON.stringify({ ...t, skip_sticky_update: true }) });
     }
   } catch {
     /* демо-данные не критичны */
@@ -803,8 +1097,9 @@ async function seedDemoData() {
 
 async function main() {
   bindEvents();
-  // Режим узнаём до решения о демо-данных.
-  await Promise.all([refresh(), checkHealth()]);
+  // Режим узнаём до решения о демо-данных; справочник цветов — для палитры/легенды/фильтра;
+  // sticky-значения подтягиваем с сервера (localStorage — только кэш).
+  await Promise.all([refresh(), checkHealth(), loadColors(), loadDefaults()]);
   if (state.mode === 'server') {
     await seedDemoData();
     await refresh({ silent: true });

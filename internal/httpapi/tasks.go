@@ -69,7 +69,11 @@ type createTaskRequest struct {
 	Priority    string   `json:"priority"`
 	Assignee    string   `json:"assignee"`
 	Labels      []string `json:"labels"`
+	Color       string   `json:"color"`
 	DueDate     *string  `json:"due_date"`
+	// SkipStickyUpdate=true — создание без явного действия пользователя
+	// (шаблон, импорт, демо-данные): sticky-значения не запоминаем.
+	SkipStickyUpdate bool `json:"skip_sticky_update"`
 }
 
 func parseTime(s *string) (*time.Time, error) {
@@ -105,12 +109,22 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		Priority:    domain.Priority(req.Priority),
 		Assignee:    req.Assignee,
 		Labels:      req.Labels,
+		Color:       req.Color,
 		DueDate:     due,
 	}
 	t, err := s.svc.Create(r.Context(), in, actorFrom(r))
 	if err != nil {
 		mapError(w, err)
 		return
+	}
+	if !req.SkipStickyUpdate {
+		s.applySticky(r, service.StickyPatch{
+			Status:   &req.Status,
+			Priority: &req.Priority,
+			Color:    &req.Color,
+			Assignee: &req.Assignee,
+			Labels:   &req.Labels,
+		})
 	}
 	writeJSON(w, http.StatusCreated, t)
 }
@@ -129,6 +143,14 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("priority"); v != "" {
 		p := domain.Priority(v)
 		f.Priority = &p
+	}
+	if v := q.Get("color"); v != "" {
+		color, err := domain.NormalizeColor(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		f.Color = color
 	}
 	if v := q.Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -169,8 +191,12 @@ type updateTaskRequest struct {
 	Priority    *string   `json:"priority"`
 	Assignee    *string   `json:"assignee"`
 	Labels      *[]string `json:"labels"`
+	Color       *string   `json:"color"`
 	DueDate     *string   `json:"due_date"`
 	Position    *float64  `json:"position"`
+	// SkipStickyUpdate=true — правка без явного выбора значений пользователем
+	// (скрипты, импорт): sticky-значения не запоминаем.
+	SkipStickyUpdate bool `json:"skip_sticky_update"`
 }
 
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +212,7 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Assignee:    req.Assignee,
 		Labels:      req.Labels,
+		Color:       req.Color,
 		Position:    req.Position,
 	}
 	if req.Status != nil {
@@ -214,6 +241,17 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		mapError(w, err)
 		return
 	}
+	// Sticky обновляют только поля, реально присутствовавшие в PATCH:
+	// точечные правки (срок, позиция) не затирают остальные значения.
+	if !req.SkipStickyUpdate {
+		s.applySticky(r, service.StickyPatch{
+			Status:   req.Status,
+			Priority: req.Priority,
+			Color:    req.Color,
+			Assignee: req.Assignee,
+			Labels:   req.Labels,
+		})
+	}
 	writeJSON(w, http.StatusOK, t)
 }
 
@@ -239,6 +277,33 @@ func (s *Server) handleMoveTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+type colorTaskRequest struct {
+	Color string `json:"color"`
+}
+
+// handleColorTask — PATCH /tasks/{id}/color: отдельная смена цветовой метки.
+// Пустая строка снимает цвет.
+func (s *Server) handleColorTask(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req colorTaskRequest
+	if err := decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "некорректный JSON: "+err.Error())
+		return
+	}
+	t, err := s.svc.Update(r.Context(), id, service.UpdateTaskInput{Color: &req.Color}, actorFrom(r))
+	if err != nil {
+		mapError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+// handleColors — GET /api/colors: фиксированный справочник цветовых меток.
+// Единственный источник правды для палитры и легенды на фронтенде.
+func (s *Server) handleColors(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"colors": domain.ColorTags})
 }
 
 func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {

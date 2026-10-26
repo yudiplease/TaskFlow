@@ -20,7 +20,7 @@ if not exist "%ISCC%" set ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe
 "%ISCC%" build\installer.iss
 if errorlevel 1 goto :err
 
-echo [4/4] Готово: dist\TaskFlow-Setup-1.1.5.exe
+echo [4/4] Готово: dist\TaskFlow-Setup-1.2.0.exe
 exit /b 0
 
 :err

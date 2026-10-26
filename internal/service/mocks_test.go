@@ -192,3 +192,32 @@ func (m *mockPublisher) types() []string {
 var (
 	_ events.Publisher = (*mockPublisher)(nil)
 )
+
+// mockDefaultsRepo — память-репозиторий «залипающих» значений.
+type mockDefaultsRepo struct {
+	mu    sync.Mutex
+	items map[string]domain.TaskDefaults
+}
+
+func newMockDefaultsRepo() *mockDefaultsRepo {
+	return &mockDefaultsRepo{items: map[string]domain.TaskDefaults{}}
+}
+
+func (m *mockDefaultsRepo) Get(_ context.Context, actor string) (domain.TaskDefaults, time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.items[actor]
+	if !ok {
+		return domain.TaskDefaults{}, time.Time{}, storage.ErrNotFound
+	}
+	return d, time.Now().UTC(), nil
+}
+
+func (m *mockDefaultsRepo) Put(_ context.Context, actor string, d domain.TaskDefaults) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.items[actor] = d
+	return time.Now().UTC(), nil
+}
+
+var _ storage.DefaultsRepository = (*mockDefaultsRepo)(nil)

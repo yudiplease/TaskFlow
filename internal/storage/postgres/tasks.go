@@ -22,11 +22,11 @@ type Tasks struct {
 // NewTasks создаёт репозиторий задач.
 func NewTasks(pool *pgxpool.Pool) *Tasks { return &Tasks{pool: pool} }
 
-const taskColumns = `id, title, description, status, priority, assignee, labels, due_date, position, created_at, updated_at`
+const taskColumns = `id, title, description, status, priority, assignee, labels, color, due_date, position, created_at, updated_at`
 
 func scanTask(row pgx.Row) (*domain.Task, error) {
 	var t domain.Task
-	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee, &t.Labels, &t.DueDate, &t.Position, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.Assignee, &t.Labels, &t.Color, &t.DueDate, &t.Position, &t.CreatedAt, &t.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
@@ -39,9 +39,9 @@ func scanTask(row pgx.Row) (*domain.Task, error) {
 // Create вставляет новую задачу.
 func (r *Tasks) Create(ctx context.Context, t *domain.Task) error {
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO tasks (id, title, description, status, priority, assignee, labels, due_date, position, created_at, updated_at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.DueDate, t.Position, t.CreatedAt, t.UpdatedAt)
+		INSERT INTO tasks (id, title, description, status, priority, assignee, labels, color, due_date, position, created_at, updated_at)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.Color, t.DueDate, t.Position, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert задачи: %w", err)
 	}
@@ -59,9 +59,9 @@ func (r *Tasks) Update(ctx context.Context, t *domain.Task) error {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE tasks SET
 			title = $2, description = $3, status = $4, priority = $5,
-			assignee = $6, labels = $7, due_date = $8, position = $9, updated_at = $10
+			assignee = $6, labels = $7, color = $8, due_date = $9, position = $10, updated_at = $11
 		WHERE id = $1::uuid`,
-		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.DueDate, t.Position, t.UpdatedAt)
+		t.ID, t.Title, t.Description, t.Status, t.Priority, t.Assignee, t.Labels, t.Color, t.DueDate, t.Position, t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("update задачи: %w", err)
 	}
@@ -103,6 +103,10 @@ func (r *Tasks) List(ctx context.Context, f domain.TaskFilter) ([]domain.Task, i
 	if f.Label != "" {
 		args = append(args, f.Label)
 		where = append(where, fmt.Sprintf("$%d = ANY(labels)", len(args)))
+	}
+	if f.Color != "" {
+		args = append(args, f.Color)
+		where = append(where, fmt.Sprintf("color = $%d", len(args)))
 	}
 	if f.Search != "" {
 		args = append(args, "%"+strings.ToLower(f.Search)+"%")
