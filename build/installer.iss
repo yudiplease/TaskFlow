@@ -1,9 +1,9 @@
 ; TaskFlow — установщик (Inno Setup 7)
-; Сборка: build\make-installer.bat → dist\TaskFlow-Setup-1.3.0.exe
+; Сборка: build\make-installer.bat → dist\TaskFlow-Setup-1.3.1.exe
 ; Установка пер-юзерная (без UAC): %LOCALAPPDATA%\Programs\TaskFlow
 
 #define MyAppName "TaskFlow"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "TaskFlow"
 #define MyAppExeName "TaskFlow.exe"
 #define MyAppDescription "TaskFlow — трекер задач"

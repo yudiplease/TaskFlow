@@ -161,6 +161,17 @@ function intlFmt(tz, opts, key) {
   return fmtCache[id];
 }
 
+/** Дата «ГГГГ-ММ-ДД» момента d в зоне tz. Собирается из formatToParts:
+ *  у многих локалей (включая ru-RU) формат «ДД.ММ.ГГГГ» — а ключи дней
+ *  календаря и значение input[type=date] требуют именно ISO-порядок. */
+function isoDateInTZ(d, tz) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(d);
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
 /** Разбирает дату задачи в DueDateTime (см. typedef выше). null — срока нет. */
 function parseDueTask(task) {
   if (!task || !task.due_at) return null;
@@ -168,8 +179,8 @@ function parseDueTask(task) {
   if (Number.isNaN(d.getTime())) return null;
   const allDay = !!task.due_all_day;
   const tz = task.due_timezone || VIEWER_TZ;
-  // en-CA даёт ГГГГ-ММ-ДД; en-GB — «ЧЧ:ММ» без h12/суффиксов.
-  const date = intlFmt(tz, { year: 'numeric', month: '2-digit', day: '2-digit' }, 'date').format(d);
+  // Ключ дня — всегда ISO: им группируется календарь и заполняется форма.
+  const date = isoDateInTZ(d, tz);
   let time = null;
   if (!allDay) {
     time = intlFmt(tz, { hour: '2-digit', minute: '2-digit', hour12: false }, 'time').format(d);
