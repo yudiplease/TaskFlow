@@ -10,7 +10,10 @@ echo [1/4] Генерация ресурса (иконка, версия, DPI-м
 if errorlevel 1 goto :err
 
 echo [2/4] Сборка TaskFlow.exe (без окна консоли)...
-go build -trimpath -ldflags="-s -w -H windowsgui" -o bin\TaskFlow.exe ./cmd/desktop
+rem Версия для проверки обновлений: ближайший тег git (v1.4.0), иначе dev.
+set VERSION=dev
+for /f "delims=" %%v in ('git describe --tags --abbrev^=0 2^>nul') do set VERSION=%%v
+go build -trimpath -ldflags="-s -w -H windowsgui -X main.version=%VERSION%" -o bin\TaskFlow.exe ./cmd/desktop
 if errorlevel 1 goto :err
 
 echo [3/4] Компиляция установщика...
@@ -20,7 +23,7 @@ if not exist "%ISCC%" set ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe
 "%ISCC%" build\installer.iss
 if errorlevel 1 goto :err
 
-echo [4/4] Готово: dist\TaskFlow-Setup-1.3.2.exe
+echo [4/4] Готово: dist\TaskFlow-Setup-1.4.0.exe
 exit /b 0
 
 :err

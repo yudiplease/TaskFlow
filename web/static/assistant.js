@@ -1,6 +1,8 @@
 /* Ася — интерактивная ассистентка TaskFlow.
    Автономный модуль: сама создаёт свой DOM, стили — в assistant.css.
    События приложения приходят через tf-toast (диспатчит app.js в toast()).
+   Звучит короткими звуками «няя»/«хи-хи» — сервис в chibi-sounds.js
+   (window.chibiSounds), настройки — в модалке «Настройки» app.js.
    Внешних зависимостей нет — работает офлайн в десктоп-версии. */
 (() => {
   'use strict';
@@ -42,8 +44,6 @@
     clickWink: ['😉 Всё под контролем!', 'Я слежу за дедлайнами. Тихо-тихо 👀'],
     clickBounce: ['Йоу! 🤸', 'Энергия +100! ⚡', 'Настроение: сделать всё! 💪'],
     noServer: 'Сервер не отвечает… глянь индикатор внизу слева 🙁',
-    voiceOn: 'Голос включён 🔊',
-    voiceOff: 'Молчу, но слежу 🔇',
   };
 
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -55,10 +55,6 @@
   container.dataset.mood = 'happy';
   container.innerHTML = `
     <div class="tf-bubble"></div>
-    <div class="tf-controls">
-      <button class="tf-ctl" id="tf-voice-name-btn" title="Сменить голос">🗣️</button>
-      <button class="tf-ctl" id="tf-voice-btn" title="Голос Аси">🔊</button>
-    </div>
     <button class="tf-hide-btn" title="Свернуть Асю">✕</button>
     <svg class="tf-stage" viewBox="0 0 200 240" width="196" height="235" aria-label="Ася — ассистентка">
       <defs>
@@ -173,129 +169,21 @@
     if (revertMs) moodTimer = setTimeout(() => { container.dataset.mood = 'happy'; }, revertMs);
   }
 
-  /* ---------- Голос: озвучка (TTS) ---------- */
-  let voiceOn = localStorage.getItem('tf-assistant-voice') !== 'off';
-  let userInteracted = false;
-  window.addEventListener('pointerdown', () => { userInteracted = true; }, { capture: true });
-  window.addEventListener('keydown', () => { userInteracted = true; }, { capture: true });
-
-  let ruVoice = null;
-  let voiceName = localStorage.getItem('tf-assistant-voice-name') || '';
-  // Флаг ставится только ручным выбором кнопкой 🗣️: авто-подобранный голос
-  // может быть перекрыт более качественным появившимся в системе.
-  let userPicked = localStorage.getItem('tf-assistant-voice-picked') === '1';
-
-  const ruVoices = () =>
-    'speechSynthesis' in window ? speechSynthesis.getVoices().filter((v) => /^ru/i.test(v.lang)) : [];
-
-  // Нейроголоса (Edge «Online (Natural)», скачанные в Windows «Natural»)
-  // звучат как живой человек — их выбираем первыми; RHVoice приятнее
-  // старых системных SAPI-голосов, поэтому тоже в приоритете.
-  const isNatural = (v) => /online|\bnatural\b|нейрос/i.test(v.name);
-  const isRH = (v) => /rhvoice/i.test(v.name);
-  const isMale = (v) => /pavel|dmitr|aleksandr|mikhail|timofey|yuriy|vitaliy|artemiy|umka|evgeniy/i.test(v.name);
-
-  const VOICE_NAMES = {
-    irina: 'Ирина', pavel: 'Павел', svetlana: 'Светлана', dariya: 'Дария',
-    alyona: 'Алёна', alena: 'Алёна', tatyana: 'Татьяна', tatiana: 'Татьяна',
-    milena: 'Милена', dmitry: 'Дмитрий', dmitri: 'Дмитрий', katya: 'Катя',
-    ekaterina: 'Екатерина', anna: 'Анна', elena: 'Елена', polina: 'Полина',
-  };
-  function prettyVoiceName(name) {
-    for (const [k, v] of Object.entries(VOICE_NAMES)) {
-      if (new RegExp(k, 'i').test(name)) return v;
-    }
-    if (/google/i.test(name)) return 'Google';
-    return name.replace(/\s*-\s*.*$/, '').replace(/microsoft|rhvoice/i, '').trim() || 'системный';
-  }
-
-  function pickVoice() {
-    const all = ruVoices();
-    if (!all.length) { ruVoice = null; return; }
-    const female = (pred) => all.find((v) => !isMale(v) && pred(v));
-    ruVoice =
-      (userPicked && all.find((v) => v.name === voiceName)) ||   // выбор пользователя
-      female(isNatural) ||                                        // нейроженской
-      all.find((v) => isNatural(v)) ||
-      female((v) => isRH(v) && /elena/i.test(v.name)) ||          // RHVoice: Елена
-      female((v) => isRH(v) && /anna/i.test(v.name)) ||           //           Анна
-      female((v) => isRH(v) && /tatiana|polina/i.test(v.name)) || //           Татьяна
-      female((v) => isRH(v)) ||
-      female((v) => /google/i.test(v.name)) ||                    // Google русский (Chrome)
-      female(() => true) ||
-      all[0];
-    voiceName = ruVoice.name;
-    localStorage.setItem('tf-assistant-voice-name', voiceName);
-  }
-  if ('speechSynthesis' in window) {
-    pickVoice();
-    speechSynthesis.addEventListener('voiceschanged', pickVoice);
-  }
-
-  // Режим приложения: в десктопе озвучка идёт через /api/tts (SAPI/RHVoice),
-  // т.к. WebView2 не видит SAPI-голоса; в браузере — web speech.
-  let appMode = 'server';
-  fetch('/readyz').then((r) => r.json()).then((b) => { appMode = b.mode || 'server'; }).catch(() => {});
-
-  const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2190}-\u{21FF}]/gu;
-  let ttsAudio = null;
-  let serverTTSBroken = false;
-
-  function speakWeb(text) {
-    if (!('speechSynthesis' in window)) return;
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'ru-RU';
-    if (ruVoice) u.voice = ruVoice;
-    // Нейроголоса хороши «как есть»; системной Irina приподнимаем тон —
-    // звучит моложе и милее.
-    const natural = ruVoice && isNatural(ruVoice);
-    u.rate = natural ? 1.0 : 1.02;
-    u.pitch = natural ? 1.05 : 1.18;
-    u.onstart = () => container.classList.add('talking');
-    u.onend = () => container.classList.remove('talking');
-    u.onerror = () => container.classList.remove('talking');
-    speechSynthesis.speak(u);
-  }
-
-  async function speakViaServer(text) {
-    const res = await fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) throw new Error('tts http ' + res.status);
-    const blob = await res.blob();
-    if (ttsAudio) { ttsAudio.pause(); URL.revokeObjectURL(ttsAudio.src); }
-    ttsAudio = new Audio(URL.createObjectURL(blob));
-    ttsAudio.onplay = () => container.classList.add('talking');
-    ttsAudio.onended = () => container.classList.remove('talking');
-    ttsAudio.onerror = () => container.classList.remove('talking');
-    await ttsAudio.play();
-  }
-
-  function speak(text) {
-    if (!voiceOn || !userInteracted) return;
-    const clean = text.replace(EMOJI_RE, '').replace(/[«»„“”"]/g, '').replace(/\s+/g, ' ').trim();
-    if (!clean) return;
-    if (appMode === 'desktop' && !serverTTSBroken) {
-      // Озвучка голосом RHVoice через наше приложение; если не вышло — web speech.
-      speakViaServer(clean).catch(() => { serverTTSBroken = true; speakWeb(clean); });
-      return;
-    }
-    speakWeb(clean);
-  }
+  /* ---------- Звуки чиби (вместо диктора) ---------- */
+  // Пул Audio, кулдауны, «Только по клику» и громкость — в chibi-sounds.js.
+  // Если скрипт не загрузился, Ася просто молчит: текстовые реплики остаются.
+  const chibi = window.chibiSounds || null;
+  const chibiEvent = (name) => { if (chibi) chibi.playEvent(name); };
 
   /* ---------- Реплики (печатная машинка) ---------- */
   let typeTimer = null;
   let hideTimer = null;
-  let lastSpeechAt = 0;
+  let lastBubbleAt = 0;
 
   function say(text, { mood = 'happy', revertMs = 2600 } = {}) {
     clearTimeout(typeTimer);
     clearTimeout(hideTimer);
     setMood(mood, { revertMs });
-    speak(text);
     bubble.classList.add('show');
     bubble.textContent = '';
     let i = 0;
@@ -304,7 +192,7 @@
       if (i < text.length) typeTimer = setTimeout(step, 16);
     };
     step();
-    lastSpeechAt = Date.now();
+    lastBubbleAt = Date.now();
     const hold = Math.min(9500, Math.max(3500, 2600 + text.length * 55));
     hideTimer = setTimeout(() => bubble.classList.remove('show'), hold);
   }
@@ -312,7 +200,7 @@
   // Реакции на события не должны сыпаться в очередь (демо-засев шлёт 10 тостов подряд).
   function react(text, opts = {}) {
     const now = Date.now();
-    if (now - lastSpeechAt < 2500) return;
+    if (now - lastBubbleAt < 2500) return;
     say(text, opts);
   }
   const fill = (tpl, map) => tpl.replace(/\{(\w+)\}/g, (_, k) => map[k] ?? '');
@@ -404,6 +292,7 @@
     if (type === 'error') {
       setMood('worried', { revertMs: 6000 });
       shake();
+      chibiEvent('error');
       react(fill(pick(PHRASES.error), { msg: message.slice(0, 90) }), { mood: 'worried', revertMs: 6000 });
       return;
     }
@@ -417,6 +306,7 @@
     }
     if (message.includes('→ Готово')) {
       celebrate();
+      chibiEvent('success');
       react(pick(PHRASES.done), { mood: 'excited', revertMs: 3000 });
       return;
     }
@@ -472,6 +362,7 @@
     const now = Date.now();
     if (now - lastClickAt < 600) return;
     lastClickAt = now;
+    chibiEvent('click');
     const roll = Math.random();
     if (roll < 0.4) {
       wave();
@@ -485,48 +376,14 @@
     }
   });
 
-  /* ---------- Кнопки управления озвучкой ---------- */
-  const voiceBtn = container.querySelector('#tf-voice-btn');
-  const voiceNameBtn = container.querySelector('#tf-voice-name-btn');
-  voiceBtn.textContent = voiceOn ? '🔊' : '🔇';
-  voiceBtn.classList.toggle('off', !voiceOn);
-
-  // Перебор доступных русских голосов: клик — следующий голос с демо-фразой.
-  voiceNameBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const all = ruVoices();
-    if (!all.length) {
-      say('Русские голоса в системе не нашла 😢', { mood: 'surprised', revertMs: 3500 });
-      return;
-    }
-    const idx = Math.max(0, all.findIndex((v) => ruVoice && v.name === ruVoice.name));
-    const next = all[(idx + 1) % all.length];
-    ruVoice = next;
-    voiceName = next.name;
-    userPicked = true;
-    localStorage.setItem('tf-assistant-voice-name', voiceName);
-    localStorage.setItem('tf-assistant-voice-picked', '1');
-    userInteracted = true;
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
-    say(`Привет! Теперь говорю голосом «${prettyVoiceName(next.name)}» 🗣️`);
-  });
-
-  voiceBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    voiceOn = !voiceOn;
-    localStorage.setItem('tf-assistant-voice', voiceOn ? 'on' : 'off');
-    voiceBtn.textContent = voiceOn ? '🔊' : '🔇';
-    voiceBtn.classList.toggle('off', !voiceOn);
-    if (!voiceOn && 'speechSynthesis' in window) speechSynthesis.cancel();
-    userInteracted = true;
-    say(voiceOn ? PHRASES.voiceOn : PHRASES.voiceOff);
-  });
-
   /* ---------- Болтовня в простое ---------- */
   let lastTipIdx = -1;
   function scheduleTip() {
     setTimeout(() => {
-      if (!document.hidden && Date.now() - lastSpeechAt > 12000) {
+      // Пауза затянулась: «угу» + совет. chibi-sounds сам проверит
+      // активность (60с бездействия), кулдаун 30с и активность вкладки.
+      if (!document.hidden && Date.now() - lastBubbleAt > 12000) {
+        chibiEvent('idle');
         let idx;
         do { idx = Math.floor(Math.random() * PHRASES.tips.length); } while (idx === lastTipIdx);
         lastTipIdx = idx;
@@ -559,6 +416,7 @@
     container.classList.remove('tf-off');
     document.body.classList.add('tf-assist-on');
     document.body.classList.remove('tf-assist-off');
+    chibiEvent('appear'); // клик по кнопке — жест есть, звук разрешён
     say('Я тут! Скучала 🎀');
   });
   document.body.appendChild(restore);
@@ -583,6 +441,7 @@
     showOff();
     setTimeout(async () => {
       wave();
+      chibiEvent('appear'); // при загрузке страницы жеста ещё не было — пул молчит
       const s = await fetchStats();
       let hello = PHRASES.intro + ' ' + PHRASES.greet(new Date().getHours());
       if (s) {
@@ -604,5 +463,5 @@
   }
 
   // Для отладки и внешних хуков.
-  window.tfAssistant = { say, celebrate, wave, wink, bounce, speak };
+  window.tfAssistant = { say, celebrate, wave, wink, bounce };
 })();

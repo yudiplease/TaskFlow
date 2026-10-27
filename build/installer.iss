@@ -3,7 +3,7 @@
 ; Установка пер-юзерная (без UAC): %LOCALAPPDATA%\Programs\TaskFlow
 
 #define MyAppName "TaskFlow"
-#define MyAppVersion "1.3.2"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "TaskFlow"
 #define MyAppExeName "TaskFlow.exe"
 #define MyAppDescription "TaskFlow — трекер задач"

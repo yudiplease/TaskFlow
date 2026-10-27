@@ -1041,11 +1041,150 @@ function updatePushButton() {
 function openSettings() {
   $('#settings-sticky-enabled').checked = state.sticky.enabled;
   renderSettingsDefaults();
+  syncChibiSettingsUI();
+  // Секция обновлений видна только когда сервер отвечает /api/updates/state;
+  // на случай, пока автопрос fresh, перерисовываем из последнего снимка.
+  if (updatesUI.status) renderUpdatesState(updatesUI.status);
   $('#settings-backdrop').classList.remove('hidden');
 }
 
 function closeSettings() {
   $('#settings-backdrop').classList.add('hidden');
+}
+
+/* ---------- Обновления (MVP GitHub Releases) ---------- */
+// Баннер и секция настроек живут от GET /api/updates/state (см. также
+// chibi-секцию выше). «×» — только в памяти сессии: до следующего запуска,
+// версию это НЕ помечает пропущенной.
+const updatesUI = {
+  dismissed: false, // «×» нажат в этой сессии
+  url: '',          // html_url последнего известного релиза
+  status: null,     // последний ответ сервера — для перерисовки при открытии настроек
+};
+
+// «Последняя проверка» — в TZ пользователя, через Intl.
+const updatesDtFormat = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+});
+
+async function fetchUpdatesState() {
+  try {
+    const st = await api('/updates/state');
+    renderUpdatesState(st);
+    $('#updates-settings-section').classList.remove('hidden');
+  } catch {
+    // 503 (режим без проверки обновлений) или сеть — секцию и баннер молча скрываем.
+    $('#updates-settings-section').classList.add('hidden');
+    $('#update-banner').classList.add('hidden');
+  }
+}
+
+function renderUpdatesState(st) {
+  updatesUI.status = st;
+  if (st.latest && st.latest.url) updatesUI.url = st.latest.url;
+  renderUpdateLastCheck(st.last_checked_at);
+  $('#settings-updates-enabled').checked = st.enabled;
+  $('#settings-updates-interval').value = String(st.interval_hours || 24);
+  const banner = $('#update-banner');
+  if (st.update_available && !updatesUI.dismissed) {
+    $('#update-banner-text').textContent = `Доступна версия ${st.latest.tag}`;
+    banner.classList.remove('hidden');
+  } else {
+    banner.classList.add('hidden');
+  }
+}
+
+function renderUpdateLastCheck(iso) {
+  $('#update-last-check').textContent = iso
+    ? `Последняя проверка: ${updatesDtFormat.format(new Date(iso))}`
+    : 'Последняя проверка: ещё не было';
+}
+
+// Внешние ссылки: в десктопе — мост tfOpenExternal (Go открывает системный
+// браузер), в обычном браузере — window.open.
+function openExternal(url) {
+  if (typeof window.tfOpenExternal === 'function') window.tfOpenExternal(url);
+  else window.open(url, '_blank', 'noopener');
+}
+
+function bindUpdatesUI() {
+  $('#update-whatsnew').addEventListener('click', () => {
+    if (updatesUI.url) openExternal(updatesUI.url);
+  });
+  $('#update-close').addEventListener('click', () => {
+    updatesUI.dismissed = true;
+    $('#update-banner').classList.add('hidden');
+  });
+  $('#settings-updates-enabled').addEventListener('change', saveUpdatesSettings);
+  $('#settings-updates-interval').addEventListener('change', saveUpdatesSettings);
+  $('#btn-check-updates').addEventListener('click', checkUpdatesNow);
+}
+
+async function saveUpdatesSettings() {
+  try {
+    const st = await api('/updates/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        enabled: $('#settings-updates-enabled').checked,
+        interval_hours: Number($('#settings-updates-interval').value),
+      }),
+    });
+    renderUpdatesState(st);
+  } catch (err) {
+    toast('Не удалось сохранить настройки обновлений: ' + err.message, 'error');
+  }
+}
+
+// Кнопка «Проверить сейчас»: блокируем на время запроса. Выбор зафиксирован:
+// если новой версии нет — тост «У вас актуальная версия» (явный клик требует
+// явного ответа, тишина выглядела бы как подвисание); ошибка — единственное
+// место, где пользователь видит сбой проверки.
+async function checkUpdatesNow() {
+  const btn = $('#btn-check-updates');
+  btn.disabled = true;
+  try {
+    const st = await api('/updates/check', { method: 'POST' });
+    renderUpdatesState(st);
+    if (!st.update_available) toast('У вас актуальная версия ✨');
+  } catch {
+    toast('Не удалось проверить обновления', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---------- Настройки звуков персонажа (chibi-sounds.js) ---------- */
+function syncChibiSettingsUI() {
+  const svc = window.chibiSounds;
+  if (!svc) return;
+  const s = svc.getSettings();
+  $('#settings-chibi-enabled').checked = s.enabled;
+  $('#settings-chibi-volume').value = Math.round(s.volume * 100);
+  $('#chibi-volume-value').textContent = Math.round(s.volume * 100) + '%';
+  $('#settings-chibi-click-only').checked = s.clickOnly;
+}
+
+function bindChibiSettings() {
+  const svc = window.chibiSounds;
+  if (!svc) return; // скрипт не загрузился — секция настроек просто не действует
+
+  $('#settings-chibi-enabled').addEventListener('change', (e) => {
+    svc.setEnabled(e.target.checked);
+  });
+
+  // Ползунок: подпись обновляется на каждый пиксель, семпл громкости
+  // играем один раз — при отпускании (change), чтобы не «пулемётить».
+  $('#settings-chibi-volume').addEventListener('input', (e) => {
+    $('#chibi-volume-value').textContent = e.target.value + '%';
+  });
+  $('#settings-chibi-volume').addEventListener('change', (e) => {
+    svc.setVolume(Number(e.target.value) / 100);
+    svc.play('hum');
+  });
+
+  $('#settings-chibi-click-only').addEventListener('change', (e) => {
+    svc.setClickOnly(e.target.checked);
+  });
 }
 
 function stickyFieldValueHTML(field, value) {
@@ -1257,6 +1396,9 @@ function bindEvents() {
     localStorage.setItem('tf_sticky_enabled', e.target.checked ? 'on' : 'off');
   });
 
+  bindChibiSettings();
+  bindUpdatesUI();
+
   // Сброс одного sticky-поля: PUT без него (пустое значение = «не запомнено»).
   $('#sticky-values-list').addEventListener('click', async (e) => {
     const btn = e.target.closest('.sticky-row-reset');
@@ -1359,6 +1501,10 @@ async function main() {
     await refresh({ silent: true });
   }
   pollNotifications(); // первый опрос — без всплывающих уведомлений
+  fetchUpdatesState();
+  // Локальный запрос к своей БД, дёшево: закрывает гонку «воркер ещё чекает
+  // при старте» и показывает обновление, найденное в длинной сессии.
+  setInterval(fetchUpdatesState, 60000);
   setInterval(checkHealth, 15000);
   setInterval(() => pollNotifications({ announce: true }), 30000);
   setInterval(() => {

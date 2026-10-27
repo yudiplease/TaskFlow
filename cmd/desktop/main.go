@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -46,8 +47,13 @@ import (
 	"tasktracker/internal/service"
 	"tasktracker/internal/storage/sqlite"
 	"tasktracker/internal/supervisor"
+	"tasktracker/internal/updatechecker"
 	"tasktracker/internal/winnotify"
 )
+
+// version проставляется при сборке релиза: -ldflags "-X main.version=v1.4.0".
+// На локальных сборках остаётся "dev" — проверка обновлений тогда не работает.
+var version = "dev"
 
 func main() {
 	headless := flag.Bool("headless", false, "запустить без окна (HTTP+API только в консоли)")
@@ -105,6 +111,15 @@ func main() {
 	svc := service.NewTaskService(tasksRepo, activityRepo, bus, m)
 	notificationsSvc := service.NewNotifications(notifRepo)
 	defaultsSvc := service.NewDefaultsService(sqlite.NewDefaults(store))
+	updatesStore := sqlite.NewUpdates(store)
+
+	// Проверка обновлений: фоновой воркер — отдельной горутиной (не через
+	// supervisor: у него легитимные тихие выходы, «быстрый возврат» там
+	// считается падением). На dev-сборках воркер внутри сам откажется работать.
+	updatesChecker := updatechecker.NewCachedChecker(
+		updatechecker.NewGitHubChecker(updatechecker.DefaultRepo),
+		updatesStore, updatechecker.DefaultInterval, log)
+	go updatechecker.StartChecker(ctx, updatesStore, version, updatechecker.DefaultInterval, log)
 
 	workers := supervisor.NewGroup(ctx, log, supervisor.Options{})
 	notif := notifier.New(tasksRepo, notifRepo, bus, m, log)
@@ -136,6 +151,8 @@ func main() {
 		Service:       svc,
 		Notifications: notificationsSvc,
 		Defaults:      defaultsSvc,
+		Updates:       updatesChecker,
+		AppVersion:    version,
 		Metrics:       m,
 		Log:           log,
 		PingPostgres: func() error {
@@ -148,12 +165,6 @@ func main() {
 	})
 
 	handler := api.Handler()
-	// Озвучка Аси: POST /api/tts синтезирует WAV через SAPI (RHVoice) —
-	// безопасно в любом режиме, включая headless.
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/tts", ttsHandler(filepath.Dir(*dbPath), log))
-	mux.Handle("/", handler)
-	handler = mux
 
 	srv := &http.Server{
 		Handler:      handler,
@@ -229,6 +240,21 @@ func openWindow(ctx context.Context, url, dataPath string, hwndOut *atomic.Uintp
 	defer wv.Destroy()
 	if p := wv.Window(); p != nil {
 		hwndOut.Store(uintptr(p))
+	}
+
+	// Мост JS→Go: «Что нового» открывает релиз в системном браузере —
+	// WebView2 сам наружу не выходит. Имя должно совпадать с openExternal()
+	// в web/static/app.js. Только http(s) и ограниченная длина.
+	if err := wv.Bind("tfOpenExternal", func(rawURL string) error {
+		if len(rawURL) > 2048 ||
+			!(strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://")) {
+			log.Warn("отказ открывать внешнюю ссылку", "url", rawURL)
+			return nil
+		}
+		openBrowser(rawURL)
+		return nil
+	}); err != nil {
+		log.Warn("мост tfOpenExternal не зарегистрирован", "err", err)
 	}
 
 	// Отмена контекста (сигнал выхода / падение сервера) закрывает окно.

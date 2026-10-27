@@ -88,6 +88,15 @@
   </aside>
 
   <main class="main">
+    <!-- Баннер обновления: над контентом, во всю ширину, не перекрывает элементы.
+         Показывается только при update_available из /api/updates/state;
+         «×» скрывает до следующего запуска (в памяти сессии). -->
+    <div class="update-banner hidden" id="update-banner" role="status">
+      <span class="update-banner-text" id="update-banner-text"></span>
+      <button class="link-btn" id="update-whatsnew">Что нового</button>
+      <button class="icon-btn" id="update-close" aria-label="Скрыть баннер обновления" title="Скрыть">✕</button>
+    </div>
+
     <header class="topbar">
       <h1 class="page-title" id="page-title">Канбан-доска</h1>
       <div class="topbar-actions">
@@ -263,12 +272,57 @@
           к стандартным значениям (Бэклог · Средний).
         </p>
       </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Звуки персонажа</div>
+        <label class="overdue-toggle">
+          <input type="checkbox" id="settings-chibi-enabled" checked>
+          <span>Звуки персонажа («няя», «хи-хи»…)</span>
+        </label>
+        <label class="field chibi-volume-field">
+          <span>Громкость — <em id="chibi-volume-value">60%</em></span>
+          <input type="range" class="settings-range" id="settings-chibi-volume" min="0" max="100" step="5" value="60" aria-label="Громкость звуков персонажа">
+        </label>
+        <label class="overdue-toggle">
+          <input type="checkbox" id="settings-chibi-click-only">
+          <span>Только по клику <em>(без появления и напоминаний в простое)</em></span>
+        </label>
+        <p class="settings-hint">
+          Ася отвечает короткими звуками вместо голоса: клик — «хи-хи»,
+          ошибка — «няя», успех — «угу». Изменения применяются сразу.
+        </p>
+      </div>
+
+      <div class="settings-section hidden" id="updates-settings-section">
+        <div class="settings-title">Обновления</div>
+        <label class="overdue-toggle">
+          <input type="checkbox" id="settings-updates-enabled">
+          <span>Автоматически проверять обновления</span>
+        </label>
+        <label class="field">
+          <span>Интервал проверки</span>
+          <select id="settings-updates-interval" class="input">
+            <option value="24">Каждые 24 часа</option>
+            <option value="72">Каждые 72 часа</option>
+            <option value="168">Каждые 168 часов (неделя)</option>
+          </select>
+        </label>
+        <label class="overdue-toggle" title="Скоро">
+          <input type="checkbox" id="settings-updates-prerelease" disabled>
+          <span>Включать предварительные версии (beta)</span>
+        </label>
+        <div class="update-last-check" id="update-last-check">Последняя проверка: ещё не было</div>
+        <div class="settings-actions">
+          <button type="button" class="btn-ghost" id="btn-check-updates">Проверить сейчас</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
 <div class="toasts" id="toasts"></div>
 
+<script src="/chibi-sounds.js"></script>
 <script src="/app.js"></script>
 <script src="/assistant.js"></script>
 </body>

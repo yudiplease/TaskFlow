@@ -14,6 +14,7 @@ import (
 	"tasktracker/internal/config"
 	"tasktracker/internal/metrics"
 	"tasktracker/internal/service"
+	"tasktracker/internal/updatechecker"
 	"tasktracker/web"
 )
 
@@ -23,6 +24,8 @@ type Server struct {
 	svc           *service.TaskService
 	notifications *service.Notifications
 	defaults      *service.DefaultsService
+	updates       *updatechecker.CachedChecker
+	appVersion    string
 	metrics       *metrics.Metrics
 	log           *slog.Logger
 	pingFn        func() error
@@ -33,11 +36,15 @@ type Server struct {
 // Deps — зависимости сервера. pingFn проверяет PostgreSQL,
 // kafkaOK (необязательно) сообщает о состоянии Kafka,
 // Mode подписывает режим: "server" (полный стек) или "desktop" (SQLite).
+// Updates (необязательно) включает проверку обновлений; AppVersion — версия
+// сборки, проставленная через -ldflags "-X main.version=...".
 type Deps struct {
 	Config        config.Config
 	Service       *service.TaskService
 	Notifications *service.Notifications
 	Defaults      *service.DefaultsService
+	Updates       *updatechecker.CachedChecker
+	AppVersion    string
 	Metrics       *metrics.Metrics
 	Log           *slog.Logger
 	PingPostgres  func() error
@@ -60,6 +67,8 @@ func NewServer(d Deps) *Server {
 		svc:           d.Service,
 		notifications: d.Notifications,
 		defaults:      d.Defaults,
+		updates:       d.Updates,
+		appVersion:    d.AppVersion,
 		metrics:       d.Metrics,
 		log:           log,
 		pingFn:        d.PingPostgres,
@@ -95,6 +104,10 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/notifications", s.handleNotifications)
 		r.Post("/notifications/read-all", s.handleNotificationsReadAll)
 		r.Post("/notifications/{id}/read", s.handleNotificationRead)
+
+		r.Get("/updates/state", s.handleUpdatesState)
+		r.Post("/updates/check", s.handleUpdatesCheck)
+		r.Put("/updates/settings", s.handleUpdatesSettings)
 
 		r.Route("/tasks", func(r chi.Router) {
 			r.Post("/", s.handleCreateTask)

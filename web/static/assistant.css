@@ -169,47 +169,6 @@
 }
 .tf-assistant:hover .tf-hide-btn { opacity: 1; }
 
-/* ---------- Панель управления: микрофон и голос ---------- */
-.tf-controls {
-  position: absolute;
-  top: 6px;
-  right: 30px;
-  display: flex;
-  gap: 6px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  pointer-events: auto;
-  z-index: 2;
-}
-.tf-assistant:hover .tf-controls { opacity: 1; }
-
-.tf-ctl {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(22, 29, 51, 0.92);
-  font-size: 12px;
-  font-family: inherit;
-  line-height: 1;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  transition: transform 0.15s ease, border-color 0.15s ease;
-}
-.tf-ctl:hover { transform: scale(1.12); border-color: rgba(255, 255, 255, 0.4); }
-.tf-ctl.off { opacity: 0.55; filter: grayscale(0.6); }
-
-/* Разговор: рот открывается-закрывается */
-.tf-assistant.talking #tf-mouth-smile { display: none; }
-.tf-assistant.talking #tf-mouth-big { display: block; animation: tf-talk 0.22s ease-in-out infinite; }
-@keyframes tf-talk {
-  0%, 100% { transform: scaleY(1); }
-  50%      { transform: scaleY(0.45); }
-}
-#tf-mouth-big { transform-box: fill-box; transform-origin: 50% 30%; }
-
 .tf-restore {
   position: fixed;
   right: 20px;
