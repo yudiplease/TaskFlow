@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaskFlow — трекер задач</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/radar.css">
 <link rel="stylesheet" href="/assistant.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
 </head>
@@ -73,10 +74,11 @@
       </div>
     </div>
 
-    <nav class="side-nav">
-      <button class="nav-btn active" id="nav-board">📋 Доска</button>
-      <button class="nav-btn" id="nav-calendar">📅 Календарь</button>
-      <button class="nav-btn" id="nav-activity">⚡ Активность</button>
+    <nav class="side-nav" role="tablist" aria-label="Виды">
+      <button class="nav-btn active" id="nav-board" role="tab" aria-selected="true">📋 Доска</button>
+      <button class="nav-btn" id="nav-calendar" role="tab" aria-selected="false">📅 Календарь</button>
+      <button class="nav-btn" id="nav-radar" role="tab" aria-selected="false">🎯 Радар</button>
+      <button class="nav-btn" id="nav-activity" role="tab" aria-selected="false">⚡ Активность</button>
       <button class="nav-btn" id="nav-settings">⚙️ Настройки</button>
     </nav>
 
@@ -143,6 +145,9 @@
     <section class="activity-view hidden" id="activity-view">
       <div class="activity-feed" id="activity-feed"></div>
     </section>
+
+    <!-- Радар дедлайнов: полноценный вид (наполняет radar-view.js) -->
+    <section class="radar-view hidden" id="radar-view" role="region" aria-label="Радар дедлайнов"></section>
   </main>
 </div>
 
@@ -257,6 +262,24 @@
     </div>
     <div class="modal-body">
       <div class="settings-section">
+        <div class="settings-title">Внешний вид</div>
+        <label class="field">
+          <span>Вид по умолчанию при запуске</span>
+          <select id="settings-default-view" class="input">
+            <option value="">Последний выбранный</option>
+            <option value="board">Канбан</option>
+            <option value="calendar">Календарь</option>
+            <option value="radar">Радар</option>
+          </select>
+        </label>
+        <p class="settings-hint">
+          Пока вы не переключали виды вручную, при запуске открывается
+          выбранный здесь вид. Ручной выбор запоминается и открывается
+          следующим.
+        </p>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-title">Значения по умолчанию для новых задач</div>
         <label class="overdue-toggle sticky-toggle">
           <input type="checkbox" id="settings-sticky-enabled">
@@ -324,6 +347,8 @@
 
 <script src="/chibi-sounds.js"></script>
 <script src="/app.js"></script>
+<script src="/radar-core.js"></script>
+<script src="/radar-view.js"></script>
 <script src="/assistant.js"></script>
 </body>
 </html>

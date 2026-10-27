@@ -1041,6 +1041,8 @@ function updatePushButton() {
 function openSettings() {
   $('#settings-sticky-enabled').checked = state.sticky.enabled;
   renderSettingsDefaults();
+  // «Внешний вид»: вид по умолчанию при запуске.
+  $('#settings-default-view').value = localStorage.getItem('ui.defaultView') || '';
   syncChibiSettingsUI();
   // Секция обновлений видна только когда сервер отвечает /api/updates/state;
   // на случай, пока автопрос fresh, перерисовываем из последнего снимка.
@@ -1225,6 +1227,7 @@ async function refresh({ silent = false } = {}) {
     renderBoard();
     renderCalendar();
     renderStats();
+    if (window.radarView) window.radarView.onTasksChanged(); // радар читает те же state.tasks
   } catch (err) {
     if (!silent) toast('Не удалось загрузить данные: ' + err.message, 'error');
   }
@@ -1381,9 +1384,10 @@ function bindEvents() {
     renderBoard();
   });
 
-  $('#nav-board').addEventListener('click', () => switchView('board'));
-  $('#nav-calendar').addEventListener('click', () => switchView('calendar'));
-  $('#nav-activity').addEventListener('click', () => switchView('activity'));
+  $('#nav-board').addEventListener('click', () => switchView('board', { manual: true }));
+  $('#nav-calendar').addEventListener('click', () => switchView('calendar', { manual: true }));
+  $('#nav-radar').addEventListener('click', () => switchView('radar', { manual: true }));
+  $('#nav-activity').addEventListener('click', () => switchView('activity', { manual: true }));
   $('#nav-settings').addEventListener('click', openSettings);
 
   $('#settings-close').addEventListener('click', closeSettings);
@@ -1394,6 +1398,11 @@ function bindEvents() {
   $('#settings-sticky-enabled').addEventListener('change', (e) => {
     state.sticky.enabled = e.target.checked;
     localStorage.setItem('tf_sticky_enabled', e.target.checked ? 'on' : 'off');
+  });
+
+  // «Внешний вид»: пустое значение = вида по умолчанию нет (берём ui.lastView).
+  $('#settings-default-view').addEventListener('change', (e) => {
+    localStorage.setItem('ui.defaultView', e.target.value || '');
   });
 
   bindChibiSettings();
@@ -1441,18 +1450,53 @@ function shiftMonth(delta) {
   renderCalendar();
 }
 
-function switchView(view) {
+const VIEW_TITLES = { board: 'Канбан-доска', calendar: 'Календарь', radar: 'Радар дедлайнов', activity: 'Лента активности' };
+const KNOWN_VIEWS = ['board', 'calendar', 'radar', 'activity'];
+
+function switchView(view, { manual = false } = {}) {
   state.view = view;
-  $('#nav-board').classList.toggle('active', view === 'board');
-  $('#nav-calendar').classList.toggle('active', view === 'calendar');
-  $('#nav-activity').classList.toggle('active', view === 'activity');
+  // Переключатель видов (role="tablist" в index.html): active + aria-selected.
+  KNOWN_VIEWS.forEach((v) => {
+    const btn = $('#nav-' + v);
+    if (btn) {
+      btn.classList.toggle('active', view === v);
+      btn.setAttribute('aria-selected', String(view === v));
+    }
+  });
+  // Полное скрытие прочих видов: радар не оставляет следов на канбане и т.д.
   $('#board').classList.toggle('hidden', view !== 'board');
   $('#calendar-view').classList.toggle('hidden', view !== 'calendar');
   $('#activity-view').classList.toggle('hidden', view !== 'activity');
-  $('#page-title').textContent =
-    view === 'board' ? 'Канбан-доска' : view === 'calendar' ? 'Календарь' : 'Лента активности';
+  $('#radar-view').classList.toggle('hidden', view !== 'radar');
+  $('#page-title').textContent = VIEW_TITLES[view] || '';
   if (view === 'calendar') renderCalendar();
   if (view === 'activity') loadActivity();
+  if (window.radarView) {
+    if (view === 'radar') window.radarView.show();
+    else window.radarView.hide();
+  }
+  // Вид отражается в URL: ?view=radar — шаринг ссылки открывает тот же режим.
+  // Фильтры радара не трогаем: ими владеет radar-view.js.
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set('view', view);
+    history.replaceState(null, '', u.pathname + (u.searchParams.toString() ? '?' + u.searchParams : ''));
+  } catch { /* history недоступен — вид всё равно переключился */ }
+  // Ручное переключение запоминается: при следующем запуске откроется оно
+  // (ui.defaultView работает, пока пользователь не переключал виды сам).
+  if (manual) localStorage.setItem('ui.lastView', view);
+}
+
+/* Стартовый вид: ?view= из URL → последний выбранный (ui.lastView) →
+   настройка «Вид по умолчанию» (ui.defaultView) → канбан. */
+function initialView() {
+  const fromUrl = window.RadarCore ? RadarCore.viewFromQuery(location.search) : null;
+  if (fromUrl) return fromUrl;
+  const last = localStorage.getItem('ui.lastView');
+  if (KNOWN_VIEWS.indexOf(last) >= 0) return last;
+  const def = localStorage.getItem('ui.defaultView');
+  if (['board', 'calendar', 'radar'].indexOf(def) >= 0) return def;
+  return 'board';
 }
 
 /* ---------- Старт ---------- */
@@ -1493,6 +1537,9 @@ async function seedDemoData() {
 
 async function main() {
   bindEvents();
+  // Стартовый вид — до загрузки данных, чтобы при defaultView=radar канбан
+  // не мигал: данные подтянутся через хук onTasksChanged в refresh().
+  switchView(initialView());
   // Режим узнаём до решения о демо-данных; справочник цветов — для палитры/легенды/фильтра;
   // sticky-значения подтягиваем с сервера (localStorage — только кэш).
   await Promise.all([refresh(), checkHealth(), loadColors(), loadDefaults()]);
@@ -1512,4 +1559,11 @@ async function main() {
   }, 5000);
 }
 
-main();
+// Запуск после ВСЕХ скриптов страницы (radar-view.js и assistant.js
+// подключены после app.js): иначе стартовый switchView не найдёт
+// window.radarView и радар не откроется без данных.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { main(); });
+} else {
+  main();
+}
